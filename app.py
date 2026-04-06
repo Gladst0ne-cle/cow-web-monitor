@@ -73,7 +73,7 @@ with st.sidebar:
                 "time": int(time.time())
             })
             # 发布到控制主题
-            mqtt_client.publish("cowshed/control/manual", cmd)
+            mqtt_client.publish("cow-web-control", cmd)
             st.toast(f"已下发指令: {device} -> {action.upper()}")
         else:
             st.error("MQTT 未连接，无法发送指令")
