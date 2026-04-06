@@ -4,11 +4,12 @@ import json
 import pandas as pd
 import time
 import queue
+import altair as alt
 from datetime import datetime
 
 # --- 1. 页面配置 ---
 st.set_page_config(page_title="CAU 智慧牧场监控", layout="wide")
-st.title("🐄 智慧牧场 - 环境监测与控制")
+st.title("🐄 智慧牧场 - 环境监测与控制中心")
 
 # --- 2. 异步队列初始化 ---
 @st.cache_resource
@@ -24,14 +25,13 @@ if 'history' not in st.session_state:
 def on_message(client, userdata, msg):
     try:
         data = json.loads(msg.payload.decode())
-        # 字段映射
         if 'nh3' in data: data['ammonia'] = data['nh3']
-        data['timestamp'] = datetime.now().strftime("%H:%M:%S")
+        data['timestamp'] = datetime.now() # 绘图需要 datetime 对象
         msg_queue.put(data)
     except:
         pass
 
-# --- 4. 建立 MQTT 连接 (Websockets 8884) ---
+# --- 4. 建立 MQTT 连接 ---
 @st.cache_resource
 def init_mqtt():
     try:
@@ -55,7 +55,7 @@ mqtt_client = init_mqtt()
 with st.sidebar:
     st.header("⚡ 运行状态")
     if mqtt_client:
-        st.success("MQTT 链路正常")
+        st.success("MQTT 已在线")
     else:
         st.error("MQTT 未连接")
 
@@ -83,44 +83,46 @@ with st.sidebar:
 # --- 6. 数据处理 ---
 while not msg_queue.empty():
     st.session_state.history.append(msg_queue.get())
-    if len(st.session_state.history) > 60:
+    if len(st.session_state.history) > 50:
         st.session_state.history.pop(0)
 
-# --- 7. UI 渲染：居中对齐的独立曲线 ---
+# --- 7. UI 渲染：分层曲线 (强制 Y 轴范围) ---
 if st.session_state.history:
     df = pd.DataFrame(st.session_state.history)
-    
-    # 顶部数据展示
-    m1, m2, m3, m4 = st.columns(4)
     latest = df.iloc[-1]
+    
+    # 顶部 Metric
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("温度", f"{latest.get('temp', 0)} ℃")
     m2.metric("湿度", f"{latest.get('humi', 0)} %")
     m3.metric("氨气", f"{latest.get('ammonia', 0)} ppm")
     m4.metric("光照", f"{latest.get('light', 0)} lx")
 
     st.divider()
-    st.subheader("📈 实时趋势监测 (分层居中显示)")
+    st.subheader("📈 实时趋势 (数值居中模式)")
 
-    # 2x2 布局展示 4 个独立坐标系的曲线
+    # 绘图辅助函数：锁定 Y 轴
+    def create_chart(data, column, title, y_range, color):
+        chart = alt.Chart(data).mark_line(color=color).encode(
+            x=alt.X('timestamp:T', title='时间'),
+            y=alt.Y(f'{column}:Q', title=title, scale=alt.Scale(domain=y_range)),
+            tooltip=['timestamp', column]
+        ).properties(height=250)
+        return chart
+
     row1_l, row1_r = st.columns(2)
     row2_l, row2_r = st.columns(2)
 
     with row1_l:
-        st.caption("温度趋势 (25℃ 居中)")
-        # 强制设置 Y 轴范围使 25 居中
-        st.line_chart(df.set_index('timestamp')['temp'], y_label="℃", color="#FF4B4B")
-        
+        st.altair_chart(create_chart(df, 'temp', '温度 (°C)', [0, 50], '#FF4B4B'), use_container_width=True)
     with row1_r:
-        st.caption("湿度趋势 (25% 居中)")
-        st.line_chart(df.set_index('timestamp')['humi'], y_label="%", color="#0068C9")
-        
+        st.altair_chart(create_chart(df, 'humi', '湿度 (%)', [0, 50], '#0068C9'), use_container_width=True)
     with row2_l:
-        st.caption("氨气浓度 (160ppm 居中)")
-        st.line_chart(df.set_index('timestamp')['ammonia'], y_label="ppm", color="#29B09D")
-        
+        # 160 居中，范围设为 [120, 200]
+        st.altair_chart(create_chart(df, 'ammonia', '氨气 (ppm)', [120, 200], '#29B09D'), use_container_width=True)
     with row2_r:
-        st.caption("光照强度 (25lx 居中)")
-        st.line_chart(df.set_index('timestamp')['light'], y_label="lx", color="#FFD700")
+        st.altair_chart(create_chart(df, 'light', '光照 (lx)', [0, 50], '#FFD700'), use_container_width=True)
+
 else:
     st.warning("📡 正在同步云端数据...")
 
