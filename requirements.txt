@@ -1,3 +1,4 @@
+streamlit
 paho-mqtt
 pandas
-streamlit
+altair
