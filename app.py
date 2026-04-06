@@ -22,12 +22,20 @@ if 'history' not in st.session_state:
 # --- 2. MQTT 数据处理 ---
 def on_message(client, userdata, msg):
     try:
+        # 新增：判断是否是控制指令的反馈
+        if msg.topic == "cowshed/control/manual":
+            # 这里可以扩展 UI 显示设备当前状态
+            pass
+            
         data = json.loads(msg.payload.decode())
         # 统一字段映射
         if 'nh3' in data: data['ammonia'] = data['nh3']
         if 'lux' in data: data['light'] = data['lux']
-        data['timestamp'] = datetime.now()
-        msg_queue.put(data)
+        
+        # 只有包含环境数据时才放入队列绘图
+        if 'temp' in data or 'humi' in data:
+            data['timestamp'] = datetime.now()
+            msg_queue.put(data)
     except:
         pass
 
@@ -41,7 +49,10 @@ def init_mqtt():
         client.username_pw_set(c["MQTT_USER"], c["MQTT_PWD"])
         client.on_message = on_message
         client.connect(c["MQTT_BROKER"], 8884, 60)
-        client.subscribe("cow-web-monitor")
+        
+        # --- 核心更改：同时订阅数据主题和控制主题 ---
+        client.subscribe([("cow-web-monitor", 0), ("cowshed/control/manual", 0)])
+        
         client.loop_start()
         return client
     except:
@@ -49,16 +60,25 @@ def init_mqtt():
 
 mqtt_client = init_mqtt()
 
-# --- 3. 侧边栏：修复重复控制区 ---
+# --- 3. 侧边栏：远程控制逻辑 ---
 with st.sidebar:
     st.header("🎮 远程控制")
     
     def send_cmd(device, action):
-        cmd = json.dumps({"device": device, "action": action, "time": time.time()})
-        mqtt_client.publish("cowshed/control/manual", cmd)
-        st.toast(f"已发送: {device} {action}")
+        if mqtt_client:
+            # 构造符合 gateway.py 解析标准的 JSON 指令
+            cmd = json.dumps({
+                "device": device, 
+                "action": action, 
+                "time": int(time.time())
+            })
+            # 发布到控制主题
+            mqtt_client.publish("cowshed/control/manual", cmd)
+            st.toast(f"已下发指令: {device} -> {action.upper()}")
+        else:
+            st.error("MQTT 未连接，无法发送指令")
 
-    # 左右并列排布，删除不必要的描述文字
+    # 左右并列排布
     c1, c2 = st.columns(2)
     with c1:
         st.write("**排风扇**")
@@ -75,15 +95,12 @@ while not msg_queue.empty():
     if len(st.session_state.history) > 60:
         st.session_state.history.pop(0)
 
-# --- 5. 动态居中图表函数 ---
+# --- 5. 动态居中图表函数 (保持不变) ---
 def create_center_chart(data, col, title, color):
     if data[col].isnull().all(): return None
-    
-    # 动态居中算法：根据当前数据窗口的极值计算缩放区间
     v_min, v_max = data[col].min(), data[col].max()
-    
-    # 增加 20% 的垂直边距，确保即使陡变，曲线也位于正中
     margin = (v_max - v_min) * 0.2 if v_max != v_min else 2
+    y_domain = [v_min - margin, v_max + padding] if 'padding' not in locals() else [v_min - margin, v_max + margin]
     y_domain = [v_min - margin, v_max + margin]
 
     return alt.Chart(data).mark_line(color=color, strokeWidth=3).encode(
@@ -92,12 +109,11 @@ def create_center_chart(data, col, title, color):
         tooltip=[alt.Tooltip('timestamp:T', format='%H:%M:%S'), f'{col}:Q']
     ).properties(height=250).interactive()
 
-# --- 6. 主界面渲染 ---
+# --- 6. 主界面渲染 (保持不变) ---
 if st.session_state.history:
     df = pd.DataFrame(st.session_state.history)
     latest = df.iloc[-1]
     
-    # 指标行
     idx = st.columns(4)
     idx[0].metric("温度", f"{latest.get('temp', 0)} ℃")
     idx[1].metric("湿度", f"{latest.get('humi', 0)} %")
@@ -106,7 +122,6 @@ if st.session_state.history:
 
     st.divider()
 
-    # 四路动态居中曲线布局
     r1_l, r1_r = st.columns(2)
     r2_l, r2_r = st.columns(2)
 
@@ -119,7 +134,7 @@ if st.session_state.history:
     with r2_r:
         st.altair_chart(create_center_chart(df, 'light', '光照', '#FFD700'), use_container_width=True)
 else:
-    st.info("📡 正在连接数据源...")
+    st.info("📡 正在连接数据源并等待传感器上传...")
 
 # --- 7. 自动刷新 ---
 time.sleep(1.5)
