@@ -6,37 +6,34 @@ import time
 import queue
 from datetime import datetime
 
-# --- 1. 页面基本配置 ---
-st.set_page_config(page_title="中农大牧场监控V2", layout="wide")
-st.title("🐄 智慧牧场 - 实时数据中心")
+# --- 1. 页面配置与美化 ---
+st.set_page_config(page_title="中农大智慧牧场监控", layout="wide")
+st.title("🐄 智慧牧场 - 全环境监测与控制中心")
 
-# --- 2. 创建一个全局中转站（队列） ---
-# 使用 st.cache_resource 确保这个队列在页面刷新时不会消失
+# --- 2. 全局状态与队列初始化 ---
 @st.cache_resource
-def get_message_queue():
+def get_msg_queue():
     return queue.Queue()
 
-msg_queue = get_message_queue()
+msg_queue = get_msg_queue()
 
-# 初始化 Session State 用于存储绘图历史
 if 'history' not in st.session_state:
     st.session_state.history = []
 
-# --- 3. MQTT 回调（只负责放数据到队列） ---
+# --- 3. MQTT 回调：只负责入队 ---
 def on_message(client, userdata, msg):
     try:
-        # 解析数据
         data = json.loads(msg.payload.decode())
-        # 兼容字段名：将 nh3 映射到 ammonia
+        # 统一字段名映射
         if 'nh3' in data: data['ammonia'] = data['nh3']
-        data['timestamp'] = datetime.now().strftime("%H:%M:%S")
+        if 'lux' in data: data['light'] = data['lux']
         
-        # 【关键】把解析好的字典扔进队列，不操作任何 Streamlit 组件
+        data['timestamp'] = datetime.now().strftime("%H:%M:%S")
         msg_queue.put(data)
     except:
         pass
 
-# --- 4. 启动并缓存 MQTT 客户端 ---
+# --- 4. 缓存 MQTT 客户端 (Websockets 8884) ---
 @st.cache_resource
 def init_mqtt():
     try:
@@ -54,45 +51,60 @@ def init_mqtt():
         st.error(f"连接失败: {e}")
         return None
 
-# 自动在后台运行连接
 mqtt_client = init_mqtt()
 
-# --- 5. 主循环：从“中转站”取数据到“展示区” ---
-# 每次页面刷新或循环，都会把队列里堆积的数据全部取出来
+# --- 5. 侧边栏：控制逻辑区 ---
+with st.sidebar:
+    st.header("⚡ 系统接入状态")
+    if mqtt_client:
+        st.success("MQTT 链路已激活")
+    else:
+        st.error("MQTT 未连接")
+
+    st.divider()
+    st.header("🎮 远程设备干预")
+    st.info("指令将发送至主题: cowshed/control/manual")
+
+    def send_cmd(device, action):
+        cmd = json.dumps({
+            "device": device, 
+            "action": action, 
+            "sender": "Web_Dashboard",
+            "timestamp": time.time()
+        })
+        mqtt_client.publish("cowshed/control/manual", cmd)
+        st.toast(f"已下发：{device} -> {action}")
+
+    # 控制按钮组
+    col_fan, col_window = st.columns(2)
+    with col_fan:
+        st.write("**排风扇**")
+        if st.button("开启风扇"): send_cmd("fan", "on")
+        if st.button("关闭风扇"): send_cmd("fan", "off")
+    
+    with col_window:
+        st.write("**内窗排气**")
+        if st.button("开启窗户"): send_cmd("window", "open")
+        if st.button("关闭窗户"): send_cmd("window", "close")
+
+    st.write("**环境补偿**")
+    if st.button("开启加热器", use_container_width=True): send_cmd("heater", "on")
+    if st.button("关闭加热器", use_container_width=True): send_cmd("heater", "off")
+
+# --- 6. 数据同步：将队列转入界面 ---
 while not msg_queue.empty():
-    new_msg = msg_queue.get()
-    st.session_state.history.append(new_msg)
-    # 保持历史记录在 50 条以内
-    if len(st.session_state.history) > 50:
+    st.session_state.history.append(msg_queue.get())
+    if len(st.session_state.history) > 100: # 增加到100个点，曲线更细腻
         st.session_state.history.pop(0)
 
-# --- 6. UI 界面渲染 ---
-st.sidebar.markdown(f"### 📡 系统状态")
-if mqtt_client:
-    st.sidebar.success("✅ MQTT 已在线")
-else:
-    st.sidebar.error("❌ MQTT 未连接")
-
+# --- 7. 主界面：分层曲线展示 ---
 if st.session_state.history:
     df = pd.DataFrame(st.session_state.history)
     latest = df.iloc[-1]
     
-    # 顶部指标卡
+    # A. 顶层大指标
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("温度", f"{latest.get('temp', '--')} ℃")
-    c2.metric("湿度", f"{latest.get('humi', '--')} %")
-    c3.metric("氨气浓度", f"{latest.get('ammonia', '--')} ppm")
-    c4.metric("光照强度", f"{latest.get('light', '--')} lx")
-
-    # 环境曲线图
-    st.divider()
-    st.subheader("📊 实时变化趋势")
-    plot_cols = [c for c in ['temp', 'humi', 'ammonia'] if c in df.columns]
-    st.line_chart(df.set_index('timestamp')[plot_cols])
-else:
-    st.warning("📡 正在同步云端数据...")
-    st.info("提示：请确保本地 gateway.py 正在运行且串口 COM5 已连接硬件。")
-
-# --- 7. 刷新驱动 ---
-time.sleep(1.5)
-st.rerun()
+    c1.metric("温度", f"{latest.get('temp', 0)} ℃")
+    c2.metric("湿度", f"{latest.get('humi', 0)} %")
+    c3.metric("氨气", f"{latest.get('ammonia', 0)} ppm")
+    c4.metric("
