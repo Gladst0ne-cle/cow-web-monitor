@@ -107,4 +107,36 @@ if st.session_state.history:
     c1.metric("温度", f"{latest.get('temp', 0)} ℃")
     c2.metric("湿度", f"{latest.get('humi', 0)} %")
     c3.metric("氨气", f"{latest.get('ammonia', 0)} ppm")
-    c4.metric("
+    c4.metric("光照", f"{latest.get('light', 0)} lx")
+
+    st.divider()
+    
+    # B. 层次化曲线：使用 Tabs 切换或 Columns 平铺
+    # 这里建议用 Columns 平铺，视觉冲击力更强
+    st.subheader("📈 环境实时趋势图 (分层监测)")
+    
+    row1_c1, row1_c2 = st.columns(2)
+    row2_c1, row2_c2 = st.columns(2)
+
+    with row1_c1:
+        st.write("🌡️ **温度曲线**")
+        st.line_chart(df.set_index('timestamp')['temp'], color="#FF4B4B")
+    
+    with row1_c2:
+        st.write("💧 **湿度曲线**")
+        st.line_chart(df.set_index('timestamp')['humi'], color="#0068C9")
+    
+    with row2_c1:
+        st.write("🧪 **氨气浓度 (NH3)**")
+        st.line_chart(df.set_index('timestamp')['ammonia'], color="#29B09D")
+    
+    with row2_c2:
+        st.write("☀️ **光照强度**")
+        st.line_chart(df.set_index('timestamp')['light'], color="#FFD700")
+
+else:
+    st.warning("📡 正在等待数据注入... 请运行本地网关。")
+
+# --- 8. 自动刷新 ---
+time.sleep(1.5)
+st.rerun()
