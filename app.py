@@ -104,9 +104,11 @@ with st.sidebar:
 
     st.divider()
     st.header("⚙️ 视觉引擎参数")
+
     vision_conf = st.slider("检测置信度阈值", 0.1, 1.0, 0.4)
     pose_every_n_frames = st.slider("姿态分析间隔帧数(越大越流畅)", 1, 15, 5)
     max_cows = st.slider("每帧最多分析牛数量", 1, 20, 6)
+    target_w = st.slider("视频显示宽度", 600, 1800, 1400, 50)
 
 # --- 4. 功能函数 ---
 def create_center_chart(data, col, title, color):
@@ -151,7 +153,6 @@ def process_vision_frame(frame, conf, frame_id):
 
     boxes = results[0].boxes.xyxy.cpu().numpy()
 
-    # 限制最多处理多少头牛，避免卡死
     if len(boxes) > max_cows:
         boxes = boxes[:max_cows]
 
@@ -161,7 +162,6 @@ def process_vision_frame(frame, conf, frame_id):
         bw = x2 - x1
         bh = y2 - y1
 
-        # 太小的框跳过
         if bw < 40 or bh < 40:
             continue
 
@@ -171,7 +171,6 @@ def process_vision_frame(frame, conf, frame_id):
         if crop.size <= 0:
             continue
 
-        # 每隔 N 帧才跑姿态模型，大幅提速
         if pose_model is not None and frame_id % pose_every_n_frames == 0:
             p_res = pose_model.predict(crop, conf=0.25, verbose=False)
 
@@ -182,7 +181,6 @@ def process_vision_frame(frame, conf, frame_id):
                     kpts_xy = kp.xy.cpu().numpy()
                     kpts_cf = kp.conf.cpu().numpy()
 
-                    # 关键：必须确保检测到人/牛关键点数量 > 0
                     if len(kpts_xy) > 0 and len(kpts_cf) > 0:
                         kpts = kpts_xy[0]
                         k_confs = kpts_cf[0]
@@ -194,7 +192,6 @@ def process_vision_frame(frame, conf, frame_id):
             else:
                 behavior = "Standing"
         else:
-            # 不跑姿态时直接用框比例估算
             behavior = "Lying" if (bw / (bh + 1e-6)) > 1.8 else "Standing"
 
         color = (0, 255, 0)
@@ -247,7 +244,6 @@ with tab_realtime:
 with tab_ai:
     st.subheader("📹 监控点 AI 行为实时分析")
 
-    v_source = st.radio("选择视频源", ["本地文件上传"], horizontal=True)
     v_display = st.empty()
 
     if 'playing' not in st.session_state:
@@ -288,11 +284,14 @@ with tab_ai:
                 st.session_state.frame_id += 1
                 frame_id = st.session_state.frame_id
 
-                frame = cv2.resize(frame, (640, 480))
+                h, w = frame.shape[:2]
+                scale = float(target_w) / float(w)
+                target_h = int(h * scale)
+                frame = cv2.resize(frame, (target_w, target_h))
 
                 processed = process_vision_frame(frame, vision_conf, frame_id)
 
-                v_display.image(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB))
+                v_display.image(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB), use_container_width=True)
 
                 time.sleep(frame_delay)
 
