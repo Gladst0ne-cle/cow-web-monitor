@@ -45,6 +45,7 @@ if 'history' not in st.session_state:
 def on_message(client, userdata, msg):
     try:
         payload = json.loads(msg.payload.decode())
+
         if 'nh3' in payload:
             payload['ammonia'] = payload['nh3']
         if 'lux' in payload:
@@ -74,7 +75,7 @@ def init_mqtt_connection():
 
 mqtt_client = init_mqtt_connection()
 
-# --- 3. 侧边栏：远程控制 ---
+# --- 3. 侧边栏 ---
 with st.sidebar:
     st.header("🎮 设备远程控制")
 
@@ -103,9 +104,11 @@ with st.sidebar:
 
     st.divider()
     st.header("⚙️ 视觉引擎参数")
-    vision_conf = st.slider("识别置信度阈值", 0.1, 1.0, 0.4)
+    vision_conf = st.slider("检测置信度阈值", 0.1, 1.0, 0.4)
+    pose_every_n_frames = st.slider("姿态分析间隔帧数(越大越流畅)", 1, 15, 5)
+    max_cows = st.slider("每帧最多分析牛数量", 1, 20, 6)
 
-# --- 4. 核心功能函数 ---
+# --- 4. 功能函数 ---
 def create_center_chart(data, col, title, color):
     if data.empty or col not in data.columns:
         return None
@@ -124,55 +127,94 @@ def create_center_chart(data, col, title, color):
     ).properties(height=240).interactive()
 
 def judge_cow_behavior(kpts, kpt_confs, bw, bh):
-    ratio = bw / bh
-    if kpts is not None and np.mean(kpt_confs) > 0.2:
-        try:
-            if kpts[0][1] > kpts[4][1] + (bh * 0.15):
-                return "Eating"
-        except:
-            pass
-    return "Lying" if ratio > 1.8 else "Standing"
+    ratio = float(bw) / float(bh + 1e-6)
 
-def process_vision_frame(frame, conf):
+    if kpts is not None and kpt_confs is not None and len(kpt_confs) > 0:
+        if float(np.mean(kpt_confs)) > 0.2:
+            try:
+                if kpts[0][1] > kpts[4][1] + (bh * 0.15):
+                    return "Eating"
+            except:
+                pass
+
+    if ratio > 1.8:
+        return "Lying"
+    return "Standing"
+
+def process_vision_frame(frame, conf, frame_id):
     if det_model is None:
         return frame
 
     results = det_model(frame, conf=conf, verbose=False)
-
     if not results or results[0].boxes is None:
         return frame
 
     boxes = results[0].boxes.xyxy.cpu().numpy()
 
+    # 限制最多处理多少头牛，避免卡死
+    if len(boxes) > max_cows:
+        boxes = boxes[:max_cows]
+
     for i, box in enumerate(boxes):
         x1, y1, x2, y2 = map(int, box)
+
+        bw = x2 - x1
+        bh = y2 - y1
+
+        # 太小的框跳过
+        if bw < 40 or bh < 40:
+            continue
+
         behavior = "Detecting..."
 
         crop = frame[max(0, y1):y2, max(0, x1):x2]
+        if crop.size <= 0:
+            continue
 
-        if crop.size > 0 and pose_model is not None:
-            p_res = pose_model.predict(crop, conf=0.2, verbose=False)
+        # 每隔 N 帧才跑姿态模型，大幅提速
+        if pose_model is not None and frame_id % pose_every_n_frames == 0:
+            p_res = pose_model.predict(crop, conf=0.25, verbose=False)
+
             if p_res and p_res[0].keypoints is not None:
-                kpts = p_res[0].keypoints.xy.cpu().numpy()[0]
-                k_confs = p_res[0].keypoints.conf.cpu().numpy()[0]
-                behavior = judge_cow_behavior(kpts, k_confs, x2 - x1, y2 - y1)
+                kp = p_res[0].keypoints
 
-        color = (0, 255, 0) if behavior == "Standing" else (255, 165, 0)
-        if behavior == "Eating":
+                if kp.xy is not None and kp.conf is not None:
+                    kpts_xy = kp.xy.cpu().numpy()
+                    kpts_cf = kp.conf.cpu().numpy()
+
+                    # 关键：必须确保检测到人/牛关键点数量 > 0
+                    if len(kpts_xy) > 0 and len(kpts_cf) > 0:
+                        kpts = kpts_xy[0]
+                        k_confs = kpts_cf[0]
+                        behavior = judge_cow_behavior(kpts, k_confs, bw, bh)
+                    else:
+                        behavior = "Standing"
+                else:
+                    behavior = "Standing"
+            else:
+                behavior = "Standing"
+        else:
+            # 不跑姿态时直接用框比例估算
+            behavior = "Lying" if (bw / (bh + 1e-6)) > 1.8 else "Standing"
+
+        color = (0, 255, 0)
+        if behavior == "Lying":
+            color = (255, 165, 0)
+        elif behavior == "Eating":
             color = (255, 255, 0)
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(frame, f"Cow {i+1} {behavior}", (x1, y1 - 10), 0, 0.7, color, 2)
+        cv2.putText(frame, f"Cow{i+1} {behavior}", (x1, y1 - 10), 0, 0.7, color, 2)
 
     return frame
 
-# --- 5. 数据同步逻辑 ---
+# --- 5. MQTT 数据同步 ---
 while not msg_queue.empty():
     st.session_state.history.append(msg_queue.get())
     if len(st.session_state.history) > 200:
         st.session_state.history.pop(0)
 
-# --- 6. 核心页面布局 ---
+# --- 6. 页面布局 ---
 tab_realtime, tab_ai, tab_history = st.tabs(["📊 实时环境中心", "📷 AI 行为感知", "📑 数据管理中心"])
 
 with tab_realtime:
@@ -205,57 +247,58 @@ with tab_realtime:
 with tab_ai:
     st.subheader("📹 监控点 AI 行为实时分析")
 
-    v_source = st.radio("选择视频源", ["本地文件上传", "实时摄像头"], horizontal=True)
+    v_source = st.radio("选择视频源", ["本地文件上传"], horizontal=True)
     v_display = st.empty()
 
     if 'playing' not in st.session_state:
         st.session_state.playing = False
 
-    if v_source == "本地文件上传":
-        f = st.file_uploader("上传录像", type=['mp4', 'avi', 'mov'])
+    if 'frame_id' not in st.session_state:
+        st.session_state.frame_id = 0
 
-        if f:
-            tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-            tfile.write(f.read())
-            tfile.close()
+    f = st.file_uploader("上传录像", type=['mp4', 'avi', 'mov'])
 
-            col1, col2 = st.columns(2)
+    if f:
+        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        tfile.write(f.read())
+        tfile.close()
 
-            with col1:
-                if st.button("▶ 播放视频"):
-                    st.session_state.playing = True
-
-            with col2:
-                if st.button("⏹ 停止播放"):
-                    st.session_state.playing = False
-
-            if st.session_state.playing:
-                cap = cv2.VideoCapture(tfile.name)
-
-                fps = cap.get(cv2.CAP_PROP_FPS)
-                if fps <= 0:
-                    fps = 25
-
-                frame_delay = 1.0 / fps
-
-                while cap.isOpened() and st.session_state.playing:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-
-                    frame = cv2.resize(frame, (640, 480))
-                    processed = process_vision_frame(frame, vision_conf)
-
-                    v_display.image(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB))
-
-                    time.sleep(frame_delay)
-
-                cap.release()
-                os.unlink(tfile.name)
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("▶ 播放视频"):
+                st.session_state.playing = True
+        with col2:
+            if st.button("⏹ 停止播放"):
                 st.session_state.playing = False
 
-    else:
-        st.info("📷 摄像头模式暂未实现（可扩展为 RTSP / USB 摄像头）")
+        if st.session_state.playing:
+            cap = cv2.VideoCapture(tfile.name)
+
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if fps <= 0:
+                fps = 25
+
+            frame_delay = 1.0 / fps
+
+            while cap.isOpened() and st.session_state.playing:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                st.session_state.frame_id += 1
+                frame_id = st.session_state.frame_id
+
+                frame = cv2.resize(frame, (640, 480))
+
+                processed = process_vision_frame(frame, vision_conf, frame_id)
+
+                v_display.image(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB))
+
+                time.sleep(frame_delay)
+
+            cap.release()
+            os.unlink(tfile.name)
+            st.session_state.playing = False
 
 with tab_history:
     st.subheader("📋 历史记录存档")
