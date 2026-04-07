@@ -14,7 +14,6 @@ import tempfile
 import os
 import gc
 
-# --- 1. 核心配置与路径管理 ---
 st.set_page_config(page_title="智能牛舍环境监测与调控系统", layout="wide", initial_sidebar_state="expanded")
 st.title("智能牛舍环境监测与调控系统")
 
@@ -92,7 +91,6 @@ with st.sidebar:
 
     st.divider()
     st.header("性能平衡参数")
-    # 默认隐藏高级选项，仅保留跳帧和频率控制
     skip_frames = st.slider("处理跳帧)", 1, 10, 3)
     pose_every_n_frames = st.slider("姿态分析频率", 5, 50, 15)
     max_cows = st.slider("最大处理目标数", 1, 10, 4)
