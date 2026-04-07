@@ -34,7 +34,7 @@ det_model, pose_model = load_yolo_models()
 
 # --- 2. 全指标 24 小时动态区间逻辑 (只增不减，细化小时逻辑) ---
 def get_hourly_thresholds():
-    h = datetime.now().hour
+    h = get_local_now().hour
     
     if 0 <= h < 6: # 凌晨睡眠期：强调保暖，氨气阈值适中
         ts = {
