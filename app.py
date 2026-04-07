@@ -15,8 +15,8 @@ import os
 import gc
 
 # --- 1. 核心配置与路径管理 ---
-st.set_page_config(page_title="CAU 智慧牧场集成系统", layout="wide", initial_sidebar_state="expanded")
-st.title("🐄 智慧牧场：环境监测与行为感知一体化平台")
+st.set_page_config(page_title="智能牛舍环境监测与调控系统", layout="wide", initial_sidebar_state="expanded")
+st.title("智能牛舍环境监测与调控系统")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DET_PATH = os.path.join(BASE_DIR, 'runs/detect/yolov8_cattle_detection_1/weights/best.pt')
@@ -33,7 +33,6 @@ def load_yolo_models():
 
 det_model, pose_model = load_yolo_models()
 
-# --- 2. MQTT 通信模块 ---
 @st.cache_resource
 def get_msg_queue():
     return queue.Queue()
@@ -71,14 +70,13 @@ def init_mqtt_connection():
 
 mqtt_client = init_mqtt_connection()
 
-# --- 3. 侧边栏：仅保留远程控制与资源优化选项 ---
 with st.sidebar:
-    st.header("🎮 设备远程控制")
+    st.header("设备远程控制")
     def send_mqtt_cmd(device, action):
         if mqtt_client:
             cmd = json.dumps({"device": device, "action": action, "time": int(time.time())})
             mqtt_client.publish("cowshed/control/manual", cmd)
-            st.toast(f"✅ 指令已送达: {device} -> {action.upper()}")
+            st.toast(f"指令送达: {device} -> {action.upper()}")
         else:
             st.error("未连接到服务器")
 
@@ -93,13 +91,12 @@ with st.sidebar:
         if st.button("关闭", key="h_off"): send_mqtt_cmd("heater", "off")
 
     st.divider()
-    st.header("🚀 性能平衡参数")
+    st.header("性能平衡参数")
     # 默认隐藏高级选项，仅保留跳帧和频率控制
-    skip_frames = st.slider("处理跳帧(越高性能负载越低)", 1, 10, 3)
-    pose_every_n_frames = st.slider("姿态分析频率(每隔N帧)", 5, 50, 15)
+    skip_frames = st.slider("处理跳帧)", 1, 10, 3)
+    pose_every_n_frames = st.slider("姿态分析频率", 5, 50, 15)
     max_cows = st.slider("最大处理目标数", 1, 10, 4)
 
-# --- 4. 功能函数 (默认参数应用) ---
 DEFAULT_CONF = 0.4
 DEFAULT_WIDTH = 800
 
@@ -124,7 +121,6 @@ def judge_cow_behavior(kpts, kpt_confs, bw, bh):
 
 def process_vision_frame(frame, frame_id):
     if det_model is None: return frame
-    # 使用默认置信度阈值
     results = det_model(frame, conf=DEFAULT_CONF, verbose=False)
     if not results or results[0].boxes is None: return frame
     
@@ -139,7 +135,6 @@ def process_vision_frame(frame, frame_id):
         behavior = "Standing"
         crop = frame[max(0, y1):y2, max(0, x1):x2]
         
-        # 强制默认开启姿态模型逻辑
         if crop.size > 0 and pose_model and (frame_id % pose_every_n_frames == 0):
             p_res = pose_model.predict(crop, conf=0.25, verbose=False)
             if p_res and p_res[0].keypoints is not None:
@@ -153,12 +148,10 @@ def process_vision_frame(frame, frame_id):
         cv2.putText(frame, f"Cow{i+1} {behavior}", (x1, y1 - 10), 0, 0.7, color, 2)
     return frame
 
-# --- 5. 数据同步 ---
 while not msg_queue.empty():
     st.session_state.history.append(msg_queue.get())
     if len(st.session_state.history) > 100: st.session_state.history.pop(0)
 
-# --- 6. 页面布局 ---
 tab_realtime, tab_ai, tab_history = st.tabs(["📊 实时环境中心", "📷 AI 行为感知", "📑 数据管理中心"])
 
 with tab_realtime:
@@ -177,10 +170,10 @@ with tab_realtime:
         with r2_l: st.altair_chart(create_center_chart(df, 'ammonia', '氨气趋势 (ppm)', '#29B09D'), use_container_width=True)
         with r2_r: st.altair_chart(create_center_chart(df, 'light', '光照趋势 (Lux)', '#FFD700'), use_container_width=True)
     else:
-        st.info("📡 等待传感器上传数据...")
+        st.info("等待传感器上传数据...")
 
 with tab_ai:
-    st.subheader("📹 监控点 AI 行为实时分析")
+    st.subheader("监控点行为分析")
     v_mode = st.radio("选择视频来源", ["本地文件上传", "开启本地摄像头"], horizontal=True)
     v_display = st.empty()
     
@@ -213,14 +206,12 @@ with tab_ai:
             
             st.session_state.frame_id += 1
             h, w = frame.shape[:2]
-            # 应用默认显示宽度 800
             scale = float(DEFAULT_WIDTH) / float(w)
             frame = cv2.resize(frame, (DEFAULT_WIDTH, int(h * scale)))
             
             processed = process_vision_frame(frame, st.session_state.frame_id)
             v_display.image(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB), use_container_width=True)
             
-            # 视觉运行时顺带刷新环境数据
             while not msg_queue.empty(): st.session_state.history.append(msg_queue.get())
             if stop_btn: break
         
@@ -229,13 +220,12 @@ with tab_ai:
         gc.collect()
 
 with tab_history:
-    st.subheader("📋 历史记录存档")
+    st.subheader("历史记录存档")
     if st.session_state.history:
         st.dataframe(pd.DataFrame(st.session_state.history), use_container_width=True)
     else:
         st.warning("暂无历史数据")
 
-# --- 7. 自动刷新 ---
 if not st.session_state.playing:
     time.sleep(1.5)
     st.rerun()
