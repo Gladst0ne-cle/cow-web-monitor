@@ -71,7 +71,7 @@ def init_mqtt_connection():
 
 mqtt_client = init_mqtt_connection()
 
-# --- 3. 侧边栏 ---
+# --- 3. 侧边栏：仅保留远程控制与资源优化选项 ---
 with st.sidebar:
     st.header("🎮 设备远程控制")
     def send_mqtt_cmd(device, action):
@@ -93,15 +93,16 @@ with st.sidebar:
         if st.button("关闭", key="h_off"): send_mqtt_cmd("heater", "off")
 
     st.divider()
-    st.header("⚙️ 视觉引擎参数")
-    vision_conf = st.slider("检测置信度阈值", 0.1, 1.0, 0.4)
-    target_w = st.slider("视频显示宽度", 480, 960, 800, 40)
-    skip_frames = st.slider("跳帧播放", 1, 10, 3)
-    enable_pose = st.checkbox("启用姿态模型", value=False)
-    pose_every_n_frames = st.slider("姿态分析间隔帧数", 5, 50, 20)
-    max_cows = st.slider("每帧最多处理牛数量", 1, 10, 4)
+    st.header("🚀 性能平衡参数")
+    # 默认隐藏高级选项，仅保留跳帧和频率控制
+    skip_frames = st.slider("处理跳帧(越高性能负载越低)", 1, 10, 3)
+    pose_every_n_frames = st.slider("姿态分析频率(每隔N帧)", 5, 50, 15)
+    max_cows = st.slider("最大处理目标数", 1, 10, 4)
 
-# --- 4. 功能函数 ---
+# --- 4. 功能函数 (默认参数应用) ---
+DEFAULT_CONF = 0.4
+DEFAULT_WIDTH = 800
+
 def create_center_chart(data, col, title, color):
     if data.empty or col not in data.columns: return None
     v_min, v_max = data[col].min(), data[col].max()
@@ -121,31 +122,38 @@ def judge_cow_behavior(kpts, kpt_confs, bw, bh):
             except: pass
     return "Lying" if ratio > 1.8 else "Standing"
 
-def process_vision_frame(frame, conf, frame_id):
+def process_vision_frame(frame, frame_id):
     if det_model is None: return frame
-    results = det_model(frame, conf=conf, verbose=False)
+    # 使用默认置信度阈值
+    results = det_model(frame, conf=DEFAULT_CONF, verbose=False)
     if not results or results[0].boxes is None: return frame
+    
     boxes = results[0].boxes.xyxy.cpu().numpy()
     if len(boxes) > max_cows: boxes = boxes[:max_cows]
+    
     for i, box in enumerate(boxes):
         x1, y1, x2, y2 = map(int, box)
         bw, bh = x2 - x1, y2 - y1
         if bw < 40 or bh < 40: continue
+        
         behavior = "Standing"
         crop = frame[max(0, y1):y2, max(0, x1):x2]
-        if crop.size > 0 and enable_pose and pose_model and frame_id % pose_every_n_frames == 0:
+        
+        # 强制默认开启姿态模型逻辑
+        if crop.size > 0 and pose_model and (frame_id % pose_every_n_frames == 0):
             p_res = pose_model.predict(crop, conf=0.25, verbose=False)
             if p_res and p_res[0].keypoints is not None:
                 kp = p_res[0].keypoints
                 if kp.xy is not None and len(kp.xy) > 0:
                     behavior = judge_cow_behavior(kp.xy.cpu().numpy()[0], kp.conf.cpu().numpy()[0], bw, bh)
+        
         color = (255, 165, 0) if behavior == "Lying" else (0, 255, 0)
         if behavior == "Eating": color = (255, 255, 0)
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
         cv2.putText(frame, f"Cow{i+1} {behavior}", (x1, y1 - 10), 0, 0.7, color, 2)
     return frame
 
-# --- 5. MQTT 数据同步 ---
+# --- 5. 数据同步 ---
 while not msg_queue.empty():
     st.session_state.history.append(msg_queue.get())
     if len(st.session_state.history) > 100: st.session_state.history.pop(0)
@@ -169,11 +177,10 @@ with tab_realtime:
         with r2_l: st.altair_chart(create_center_chart(df, 'ammonia', '氨气趋势 (ppm)', '#29B09D'), use_container_width=True)
         with r2_r: st.altair_chart(create_center_chart(df, 'light', '光照趋势 (Lux)', '#FFD700'), use_container_width=True)
     else:
-        st.info("📡 等待数据...")
+        st.info("📡 等待传感器上传数据...")
 
 with tab_ai:
-    st.subheader("📹 AI 行为分析控制")
-    # --- 新增摄像头/文件选择逻辑 ---
+    st.subheader("📹 监控点 AI 行为实时分析")
     v_mode = st.radio("选择视频来源", ["本地文件上传", "开启本地摄像头"], horizontal=True)
     v_display = st.empty()
     
@@ -182,18 +189,18 @@ with tab_ai:
 
     cap = None
     if v_mode == "本地文件上传":
-        f = st.file_uploader("上传录像", type=['mp4', 'avi', 'mov'])
+        f = st.file_uploader("上传录像文件", type=['mp4', 'avi', 'mov'])
         if f:
             tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
             tfile.write(f.read())
             tfile.close()
-            if st.button("▶ 开始处理文件"):
+            if st.button("▶ 开始分析"):
                 st.session_state.playing = True
                 cap = cv2.VideoCapture(tfile.name)
     else:
-        if st.button("▶ 开启摄像头"):
+        if st.button("▶ 开启摄像头实时检测"):
             st.session_state.playing = True
-            cap = cv2.VideoCapture(0) # 调用本地 0 号摄像头
+            cap = cv2.VideoCapture(0)
 
     if st.session_state.playing and cap is not None:
         stop_btn = st.button("⏹ 停止播放")
@@ -206,12 +213,14 @@ with tab_ai:
             
             st.session_state.frame_id += 1
             h, w = frame.shape[:2]
-            scale = float(target_w) / float(w)
-            frame = cv2.resize(frame, (target_w, int(h * scale)))
-            processed = process_vision_frame(frame, vision_conf, st.session_state.frame_id)
+            # 应用默认显示宽度 800
+            scale = float(DEFAULT_WIDTH) / float(w)
+            frame = cv2.resize(frame, (DEFAULT_WIDTH, int(h * scale)))
+            
+            processed = process_vision_frame(frame, st.session_state.frame_id)
             v_display.image(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB), use_container_width=True)
             
-            # 视觉运行时同步 MQTT
+            # 视觉运行时顺带刷新环境数据
             while not msg_queue.empty(): st.session_state.history.append(msg_queue.get())
             if stop_btn: break
         
@@ -224,7 +233,7 @@ with tab_history:
     if st.session_state.history:
         st.dataframe(pd.DataFrame(st.session_state.history), use_container_width=True)
     else:
-        st.warning("暂无数据")
+        st.warning("暂无历史数据")
 
 # --- 7. 自动刷新 ---
 if not st.session_state.playing:
