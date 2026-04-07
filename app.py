@@ -32,32 +32,45 @@ def load_yolo_models():
 
 det_model, pose_model = load_yolo_models()
 
-# --- 2. 全指标 24 小时动态区间逻辑 ---
+# --- 2. 全指标 24 小时动态区间逻辑 (只增不减，细化小时逻辑) ---
 def get_hourly_thresholds():
-    """根据当前小时，计算全维度的动态判定区间"""
+    """根据当前小时，计算全维度的动态判定区间。调高了氨气标准，优化了光照标准。"""
     h = datetime.now().hour
     
-    # 定义基础区间（针对 4 月春季）
-    # 逻辑：凌晨(0-5)强调保暖与低氨气；白天(6-17)强调通风与光照；夜晚(18-23)强调安静与适温
-    if 0 <= h < 6: # 凌晨
+    # 逻辑：根据小时细化 5 个生理时段
+    if 0 <= h < 6: # 凌晨睡眠期：强调保暖，氨气阈值适中
         ts = {
-            'temp': {'good': 15, 'normal': 20, 'warning': 25},
+            'temp': {'good': 14, 'normal': 18, 'warning': 22},
             'humi': {'good': 50, 'normal': 65, 'warning': 80},
-            'ammonia': {'good': 30, 'normal': 80, 'warning': 150},
-            'light': {'good': 0, 'normal': 0, 'warning': 0} # 凌晨无光为优
+            'ammonia': {'good': 260, 'normal': 310, 'warning': 360}, # 调高标准
+            'light': {'good': 0, 'normal': 0, 'warning': 0}
         }
-    elif 6 <= h < 18: # 白天
-        ts = {
-            'temp': {'good': 22, 'normal': 26, 'warning': 30},
-            'humi': {'good': 60, 'normal': 75, 'warning': 85},
-            'ammonia': {'good': 50, 'normal': 150, 'warning': 250}, # 适应你 300 左右的数值需求
-            'light': {'good': 150, 'normal': 80, 'warning': 30} # 白天高照为优
-        }
-    else: # 夜间
+    elif 6 <= h < 10: # 早晨活跃期：气温回升，光照增加
         ts = {
             'temp': {'good': 18, 'normal': 22, 'warning': 26},
-            'humi': {'good': 55, 'normal': 70, 'warning': 80},
-            'ammonia': {'good': 40, 'normal': 100, 'warning': 200},
+            'humi': {'good': 55, 'normal': 70, 'warning': 85},
+            'ammonia': {'good': 280, 'normal': 330, 'warning': 380}, # 调高标准
+            'light': {'good': 80, 'normal': 40, 'warning': 10}
+        }
+    elif 10 <= h < 16: # 午后高峰期：气温最高，光照最强，通风好氨气容忍度最高
+        ts = {
+            'temp': {'good': 24, 'normal': 28, 'warning': 32},
+            'humi': {'good': 60, 'normal': 75, 'warning': 90},
+            'ammonia': {'good': 300, 'normal': 350, 'warning': 410}, # 调高标准
+            'light': {'good': 150, 'normal': 100, 'warning': 50}
+        }
+    elif 16 <= h < 20: # 傍晚采食期：光照减弱
+        ts = {
+            'temp': {'good': 20, 'normal': 24, 'warning': 28},
+            'humi': {'good': 58, 'normal': 72, 'warning': 85},
+            'ammonia': {'good': 270, 'normal': 320, 'warning': 370}, # 调高标准
+            'light': {'good': 50, 'normal': 20, 'warning': 5}
+        }
+    else: # 夜间休整期：安静避光
+        ts = {
+            'temp': {'good': 16, 'normal': 20, 'warning': 24},
+            'humi': {'good': 52, 'normal': 68, 'warning': 80},
+            'ammonia': {'good': 250, 'normal': 300, 'warning': 350}, # 调高标准
             'light': {'good': 5, 'normal': 0, 'warning': 0}
         }
     return ts
@@ -219,12 +232,18 @@ with tab_realtime:
         # 综合评价
         st.divider()
         final_score = max(t_s, h_s, a_s, l_s)
-        time_tag = "凌晨睡眠期" if 0 <= h_now < 6 else "日间活跃期" if 6 <= h_now < 18 else "夜间休整期"
+        
+        # 定义时段标签（更细化）
+        if 0 <= h_now < 6: time_tag = "凌晨睡眠期"
+        elif 6 <= h_now < 10: time_tag = "早晨活跃期"
+        elif 10 <= h_now < 16: time_tag = "日间高峰期"
+        elif 16 <= h_now < 20: time_tag = "傍晚采食期"
+        else: time_tag = "夜间休整期"
         
         eval_map = {
-            0: ("优", f"当前处于{time_tag}，全维度指标均在理想范围内。"),
-            1: ("良", f"当前处于{time_tag}，环境参数稳定。请维持自动化系统开启。"),
-            2: ("警告", f"警告：{time_tag}某项指标偏离。建议检查通风扇，防止氨气或湿度堆积。"),
+            0: ("优", f"当前处于{time_tag}，系统已按当前小时自动调优判定区间，全维度指标极佳。"),
+            1: ("良", f"当前处于{time_tag}，环境参数稳定。氨气标准已根据传感器反馈调优至高敏范围。"),
+            2: ("警告", f"警告：{time_tag}某项指标偏离。请检查设备运行状态，保持空气流通。"),
             3: ("异常", f"严重异常：{time_tag}指标恶化！检测到高浓度氨气或剧烈温差，请人工核查。")
         }
         res_tag, res_text = eval_map[final_score]
