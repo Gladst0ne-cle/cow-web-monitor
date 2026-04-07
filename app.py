@@ -150,7 +150,7 @@ while not msg_queue.empty():
     st.session_state.history.append(msg_queue.get())
     if len(st.session_state.history) > 100: st.session_state.history.pop(0)
 
-tab_realtime, tab_ai, tab_history = st.tabs(["📊 实时环境中心", "📷 AI 行为感知", "📑 数据管理中心"])
+tab_realtime, tab_ai, tab_history = st.tabs(["实时环境监测", "牛只行为识别", "数据管理中心"])
 
 with tab_realtime:
     if st.session_state.history:
