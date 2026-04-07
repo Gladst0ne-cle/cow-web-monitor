@@ -14,9 +14,9 @@ import tempfile
 import os
 import gc
 
-# --- 1. 核心配置 ---
+
 st.set_page_config(page_title="智能牛舍环境监测与调控系统", layout="wide", initial_sidebar_state="expanded")
-st.title("🐄 智能牛舍环境监测与调控系统")
+st.title("智能牛舍环境监测与调控系统")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DET_PATH = os.path.join(BASE_DIR, 'runs/detect/yolov8_cattle_detection_1/weights/best.pt')
@@ -34,10 +34,8 @@ det_model, pose_model = load_yolo_models()
 
 # --- 2. 全指标 24 小时动态区间逻辑 (只增不减，细化小时逻辑) ---
 def get_hourly_thresholds():
-    """根据当前小时，计算全维度的动态判定区间。调高了氨气标准，优化了光照标准。"""
     h = datetime.now().hour
     
-    # 逻辑：根据小时细化 5 个生理时段
     if 0 <= h < 6: # 凌晨睡眠期：强调保暖，氨气阈值适中
         ts = {
             'temp': {'good': 14, 'normal': 18, 'warning': 22},
@@ -123,7 +121,7 @@ mqtt_client = init_mqtt_connection()
 
 # --- 4. 侧边栏 ---
 with st.sidebar:
-    st.header("🎮 设备远程控制")
+    st.header("设备远程控制")
     def send_mqtt_cmd(device, action):
         if mqtt_client:
             cmd = json.dumps({"device": device, "action": action, "time": int(time.time())})
@@ -142,7 +140,7 @@ with st.sidebar:
         if st.button("关闭", key="h_off"): send_mqtt_cmd("heater", "off")
 
     st.divider()
-    st.header("🚀 视觉性能调节")
+    st.header("参数调节")
     skip_frames = st.slider("处理跳帧", 1, 10, 3)
     pose_every_n_frames = st.slider("姿态分析频率", 5, 50, 15)
     max_cows = st.slider("最大处理数", 1, 10, 4)
@@ -262,7 +260,7 @@ with tab_realtime:
     else: st.info("📡 等待传感器数据...")
 
 with tab_ai:
-    st.subheader("📹 AI 行为视频流")
+    st.subheader("行为视频流")
     v_mode = st.radio("视频源", ["文件上传", "摄像头"], horizontal=True)
     v_display = st.empty()
     if 'playing' not in st.session_state: st.session_state.playing = False
@@ -297,7 +295,7 @@ with tab_ai:
         gc.collect()
 
 with tab_history:
-    st.subheader("📋 历史记录")
+    st.subheader("历史记录")
     if st.session_state.history: st.dataframe(pd.DataFrame(st.session_state.history), use_container_width=True)
 
 if not st.session_state.playing:
