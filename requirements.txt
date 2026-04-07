@@ -1,7 +1,6 @@
-opencv-python-headless
 ultralytics
+opencv-python-headless
 paho-mqtt
 pandas
+numpy
 altair
-torch
-torchvision
