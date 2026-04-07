@@ -12,6 +12,7 @@ import torch
 from ultralytics import YOLO
 import tempfile
 import os
+import gc
 
 # --- 1. 核心配置与路径管理 ---
 st.set_page_config(page_title="CAU 智慧牧场集成系统", layout="wide", initial_sidebar_state="expanded")
@@ -23,11 +24,16 @@ POSE_PATH = os.path.join(BASE_DIR, 'runs/pose/cattle_pose_v19/weights/best.pt')
 
 @st.cache_resource
 def load_yolo_models():
-    if not os.path.exists(DET_PATH) or not os.path.exists(POSE_PATH):
+    if not os.path.exists(DET_PATH):
         return None, None
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     det = YOLO(DET_PATH).to(device)
-    pose = YOLO(POSE_PATH).to(device)
+
+    if os.path.exists(POSE_PATH):
+        pose = YOLO(POSE_PATH).to(device)
+    else:
+        pose = None
+
     return det, pose
 
 det_model, pose_model = load_yolo_models()
@@ -106,9 +112,16 @@ with st.sidebar:
     st.header("⚙️ 视觉引擎参数")
 
     vision_conf = st.slider("检测置信度阈值", 0.1, 1.0, 0.4)
-    pose_every_n_frames = st.slider("姿态分析间隔帧数(越大越流畅)", 1, 15, 5)
-    max_cows = st.slider("每帧最多分析牛数量", 1, 20, 6)
-    target_w = st.slider("视频显示宽度", 600, 1800, 1400, 50)
+
+    target_w = st.slider("视频显示宽度(云端建议<=960)", 480, 960, 800, 40)
+
+    skip_frames = st.slider("跳帧播放(越大越省资源)", 1, 10, 3)
+
+    enable_pose = st.checkbox("启用姿态模型(非常耗资源)", value=False)
+
+    pose_every_n_frames = st.slider("姿态分析间隔帧数", 5, 50, 20)
+
+    max_cows = st.slider("每帧最多处理牛数量", 1, 10, 4)
 
 # --- 4. 功能函数 ---
 def create_center_chart(data, col, title, color):
@@ -165,34 +178,24 @@ def process_vision_frame(frame, conf, frame_id):
         if bw < 40 or bh < 40:
             continue
 
-        behavior = "Detecting..."
+        behavior = "Standing"
 
         crop = frame[max(0, y1):y2, max(0, x1):x2]
         if crop.size <= 0:
             continue
 
-        if pose_model is not None and frame_id % pose_every_n_frames == 0:
+        if enable_pose and pose_model is not None and frame_id % pose_every_n_frames == 0:
             p_res = pose_model.predict(crop, conf=0.25, verbose=False)
 
             if p_res and p_res[0].keypoints is not None:
                 kp = p_res[0].keypoints
-
                 if kp.xy is not None and kp.conf is not None:
                     kpts_xy = kp.xy.cpu().numpy()
                     kpts_cf = kp.conf.cpu().numpy()
-
                     if len(kpts_xy) > 0 and len(kpts_cf) > 0:
                         kpts = kpts_xy[0]
                         k_confs = kpts_cf[0]
                         behavior = judge_cow_behavior(kpts, k_confs, bw, bh)
-                    else:
-                        behavior = "Standing"
-                else:
-                    behavior = "Standing"
-            else:
-                behavior = "Standing"
-        else:
-            behavior = "Lying" if (bw / (bh + 1e-6)) > 1.8 else "Standing"
 
         color = (0, 255, 0)
         if behavior == "Lying":
@@ -208,7 +211,7 @@ def process_vision_frame(frame, conf, frame_id):
 # --- 5. MQTT 数据同步 ---
 while not msg_queue.empty():
     st.session_state.history.append(msg_queue.get())
-    if len(st.session_state.history) > 200:
+    if len(st.session_state.history) > 100:
         st.session_state.history.pop(0)
 
 # --- 6. 页面布局 ---
@@ -242,7 +245,7 @@ with tab_realtime:
         st.info("📡 等待数据...")
 
 with tab_ai:
-    st.subheader("📹 监控点 AI 行为实时分析")
+    st.subheader("📹 监控点 AI 行为实时分析（云端节省资源模式）")
 
     v_display = st.empty()
 
@@ -274,12 +277,18 @@ with tab_ai:
             if fps <= 0:
                 fps = 25
 
-            frame_delay = 1.0 / fps
+            frame_delay = 1.0 / 8.0
+
+            count = 0
 
             while cap.isOpened() and st.session_state.playing:
                 ret, frame = cap.read()
                 if not ret:
                     break
+
+                count += 1
+                if count % skip_frames != 0:
+                    continue
 
                 st.session_state.frame_id += 1
                 frame_id = st.session_state.frame_id
@@ -298,6 +307,12 @@ with tab_ai:
             cap.release()
             os.unlink(tfile.name)
             st.session_state.playing = False
+
+            del cap
+            gc.collect()
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 with tab_history:
     st.subheader("📋 历史记录存档")
