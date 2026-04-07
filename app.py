@@ -6,7 +6,7 @@ import numpy as np
 import time
 import queue
 import altair as alt
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import cv2
 import torch
 from ultralytics import YOLO
@@ -14,9 +14,14 @@ import tempfile
 import os
 import gc
 
+# --- 0. 基础时区函数 (放在最前，防止 NameError) ---
+def get_local_now():
+    """获取北京时间 (UTC+8)"""
+    return datetime.now(timezone(timedelta(hours=8)))
 
+# --- 1. 核心配置 ---
 st.set_page_config(page_title="智能牛舍环境监测与调控系统", layout="wide", initial_sidebar_state="expanded")
-st.title("智能牛舍环境监测与调控系统")
+st.title("🐄 智能牛舍环境监测与调控系统")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DET_PATH = os.path.join(BASE_DIR, 'runs/detect/yolov8_cattle_detection_1/weights/best.pt')
@@ -32,54 +37,54 @@ def load_yolo_models():
 
 det_model, pose_model = load_yolo_models()
 
-# --- 2. 全指标 24 小时动态区间逻辑 (只增不减，细化小时逻辑) ---
+# --- 2. 全指标 24 小时动态区间逻辑 ---
 def get_hourly_thresholds():
+    """根据北京时间小时，计算动态判定区间，调高氨气标准"""
     h = get_local_now().hour
     
-    if 0 <= h < 6: # 凌晨睡眠期：强调保暖，氨气阈值适中
+    if 0 <= h < 6: # 凌晨
         ts = {
             'temp': {'good': 14, 'normal': 18, 'warning': 22},
             'humi': {'good': 50, 'normal': 65, 'warning': 80},
-            'ammonia': {'good': 260, 'normal': 310, 'warning': 360}, # 调高标准
+            'ammonia': {'good': 260, 'normal': 310, 'warning': 360},
             'light': {'good': 0, 'normal': 0, 'warning': 0}
         }
-    elif 6 <= h < 10: # 早晨活跃期：气温回升，光照增加
+    elif 6 <= h < 10: # 早晨
         ts = {
             'temp': {'good': 18, 'normal': 22, 'warning': 26},
             'humi': {'good': 55, 'normal': 70, 'warning': 85},
-            'ammonia': {'good': 280, 'normal': 330, 'warning': 380}, # 调高标准
+            'ammonia': {'good': 280, 'normal': 330, 'warning': 380},
             'light': {'good': 80, 'normal': 40, 'warning': 10}
         }
-    elif 10 <= h < 16: # 午后高峰期：气温最高，光照最强，通风好氨气容忍度最高
+    elif 10 <= h < 16: # 午后
         ts = {
             'temp': {'good': 24, 'normal': 28, 'warning': 32},
             'humi': {'good': 60, 'normal': 75, 'warning': 90},
-            'ammonia': {'good': 300, 'normal': 350, 'warning': 410}, # 调高标准
+            'ammonia': {'good': 300, 'normal': 350, 'warning': 410},
             'light': {'good': 150, 'normal': 100, 'warning': 50}
         }
-    elif 16 <= h < 20: # 傍晚采食期：光照减弱
+    elif 16 <= h < 20: # 傍晚
         ts = {
             'temp': {'good': 20, 'normal': 24, 'warning': 28},
             'humi': {'good': 58, 'normal': 72, 'warning': 85},
-            'ammonia': {'good': 270, 'normal': 320, 'warning': 370}, # 调高标准
+            'ammonia': {'good': 270, 'normal': 320, 'warning': 370},
             'light': {'good': 50, 'normal': 20, 'warning': 5}
         }
-    else: # 夜间休整期：安静避光
+    else: # 夜间
         ts = {
             'temp': {'good': 16, 'normal': 20, 'warning': 24},
             'humi': {'good': 52, 'normal': 68, 'warning': 80},
-            'ammonia': {'good': 250, 'normal': 300, 'warning': 350}, # 调高标准
+            'ammonia': {'good': 250, 'normal': 300, 'warning': 350},
             'light': {'good': 5, 'normal': 0, 'warning': 0}
         }
     return ts
 
 def get_status_config(value, thresholds, mode='normal'):
-    """统一状态判定引擎"""
-    if mode == 'light': # 光照越大越好
+    if mode == 'light':
         if value >= thresholds['good']: return "优", "green", 0
         elif value >= thresholds['normal']: return "良", "blue", 1
         else: return "警告", "orange", 2
-    else: # 温湿度、氨气越低越好（在正常范围内）
+    else:
         if value <= thresholds['good']: return "优", "green", 0
         elif value <= thresholds['normal']: return "良", "blue", 1
         elif value <= thresholds['warning']: return "警告", "orange", 2
@@ -98,7 +103,8 @@ def on_message(client, userdata, msg):
         if 'nh3' in payload: payload['ammonia'] = payload['nh3']
         if 'lux' in payload: payload['light'] = payload['lux']
         if any(k in payload for k in ['temp', 'humi', 'ammonia', 'light']):
-            payload['timestamp'] = datetime.now()
+            # 统一使用本地时间作为数据时间戳
+            payload['timestamp'] = get_local_now()
             msg_queue.put(payload)
     except: pass
 
@@ -121,7 +127,7 @@ mqtt_client = init_mqtt_connection()
 
 # --- 4. 侧边栏 ---
 with st.sidebar:
-    st.header("设备远程控制")
+    st.header("🎮 设备远程控制")
     def send_mqtt_cmd(device, action):
         if mqtt_client:
             cmd = json.dumps({"device": device, "action": action, "time": int(time.time())})
@@ -140,7 +146,7 @@ with st.sidebar:
         if st.button("关闭", key="h_off"): send_mqtt_cmd("heater", "off")
 
     st.divider()
-    st.header("参数调节")
+    st.header("🚀 视觉性能调节")
     skip_frames = st.slider("处理跳帧", 1, 10, 3)
     pose_every_n_frames = st.slider("姿态分析频率", 5, 50, 15)
     max_cows = st.slider("最大处理数", 1, 10, 4)
@@ -202,17 +208,16 @@ with tab_realtime:
         df = pd.DataFrame(st.session_state.history)
         latest = df.iloc[-1]
         
-        # 核心：获取当前小时的专属阈值
+        # 使用本地修正时间进行逻辑判定
+        local_now = get_local_now()
         ts = get_hourly_thresholds()
-        h_now = datetime.now().hour
+        h_now = local_now.hour
         
-        # 计算全指标状态
         t_l, t_c, t_s = get_status_config(latest.get('temp', 0), ts['temp'])
         h_l, h_c, h_s = get_status_config(latest.get('humi', 0), ts['humi'])
         a_l, a_c, a_s = get_status_config(latest.get('ammonia', 0), ts['ammonia'])
         l_l, l_c, l_s = get_status_config(latest.get('light', 0), ts['light'], mode='light')
 
-        # 显示指标
         m1, m2, m3, m4 = st.columns(4)
         with m1:
             st.metric("环境温度", f"{latest.get('temp', 0):.1f} ℃")
@@ -227,11 +232,9 @@ with tab_realtime:
             st.metric("光照强度", f"{latest.get('light', 0):.0f} Lux")
             st.markdown(f":{l_c}[● {l_l}]")
 
-        # 综合评价
         st.divider()
         final_score = max(t_s, h_s, a_s, l_s)
         
-        # 定义时段标签（更细化）
         if 0 <= h_now < 6: time_tag = "凌晨睡眠期"
         elif 6 <= h_now < 10: time_tag = "早晨活跃期"
         elif 10 <= h_now < 16: time_tag = "日间高峰期"
@@ -239,17 +242,17 @@ with tab_realtime:
         else: time_tag = "夜间休整期"
         
         eval_map = {
-            0: ("优", f"当前处于{time_tag}，系统已按当前小时自动调优判定区间，全维度指标极佳。"),
-            1: ("良", f"当前处于{time_tag}，环境参数稳定。氨气标准已根据传感器反馈调优至高敏范围。"),
-            2: ("警告", f"警告：{time_tag}某项指标偏离。请检查设备运行状态，保持空气流通。"),
-            3: ("异常", f"严重异常：{time_tag}指标恶化！检测到高浓度氨气或剧烈温差，请人工核查。")
+            0: ("优", f"当前时间 {local_now.strftime('%H:%M')}，处于{time_tag}，环境指标处于动态最优区间。"),
+            1: ("良", f"当前时间 {local_now.strftime('%H:%M')}，处于{time_tag}，环境参数稳定。"),
+            2: ("警告", f"警告：时段 {time_tag} 某些参数偏离标准，请注意自动通风控制。"),
+            3: ("异常", f"严重异常：检测到恶劣环境数据波动，请立即核查现场！")
         }
         res_tag, res_text = eval_map[final_score]
         
         if final_score <= 1:
-            st.success(f"🗓 **{h_now}:00 {time_tag}综合评价：{res_tag}** \n\n {res_text}")
+            st.success(f"🗓 **{local_now.strftime('%H:%M')} {time_tag}综合评价：{res_tag}** \n\n {res_text}")
         else:
-            st.error(f"🚨 **{h_now}:00 {time_tag}综合评价：{res_tag}** \n\n {res_text}")
+            st.error(f"🚨 **{local_now.strftime('%H:%M')} {time_tag}综合评价：{res_tag}** \n\n {res_text}")
 
         st.divider()
         r1_l, r1_r = st.columns(2); r2_l, r2_r = st.columns(2)
@@ -260,7 +263,7 @@ with tab_realtime:
     else: st.info("📡 等待传感器数据...")
 
 with tab_ai:
-    st.subheader("行为视频流")
+    st.subheader("📹 AI 行为视频流")
     v_mode = st.radio("视频源", ["文件上传", "摄像头"], horizontal=True)
     v_display = st.empty()
     if 'playing' not in st.session_state: st.session_state.playing = False
@@ -295,7 +298,7 @@ with tab_ai:
         gc.collect()
 
 with tab_history:
-    st.subheader("历史记录")
+    st.subheader("📋 历史记录")
     if st.session_state.history: st.dataframe(pd.DataFrame(st.session_state.history), use_container_width=True)
 
 if not st.session_state.playing:
