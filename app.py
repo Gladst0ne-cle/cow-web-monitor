@@ -35,10 +35,7 @@ det_model, pose_model = load_yolo_models()
 
 # --- 2. 环境评价逻辑 (参考 4月春季肉牛养殖规范) ---
 def get_status_config(value, thresholds, reverse=False):
-    """
-    根据阈值返回程度和颜色标签
-    reverse=True 用于光照等越大越好的指标
-    """
+    """根据阈值返回程度和颜色标签"""
     if not reverse:
         if value <= thresholds['good']: return "优", "green", 0
         elif value <= thresholds['normal']: return "良", "blue", 1
@@ -50,12 +47,12 @@ def get_status_config(value, thresholds, reverse=False):
         elif value >= thresholds['warning']: return "警告", "orange", 2
         else: return "异常", "red", 3
 
-# 4月春季阈值设定 (参考 GB/T 30767-2014 肉牛养殖环境)
+# 4月春季阈值设定 (参考 GB/T 30767-2014)
 ENV_THRESHOLDS = {
-    'temp': {'good': 18, 'normal': 24, 'warning': 28},    # 春季适宜温度 10-20℃
-    'humi': {'good': 60, 'normal': 70, 'warning': 85},    # 湿度不宜过高，防止病菌滋生
-    'ammonia': {'good': 5, 'normal': 12, 'warning': 20},  # 氨气是春季通风的关键指标
-    'light': {'good': 150, 'normal': 80, 'warning': 40},  # 保证春季光照时长
+    'temp': {'good': 18, 'normal': 24, 'warning': 28},
+    'humi': {'good': 60, 'normal': 70, 'warning': 85},
+    'ammonia': {'good': 5, 'normal': 12, 'warning': 20},
+    'light': {'good': 150, 'normal': 80, 'warning': 40},
 }
 
 # --- 3. MQTT 通信模块 ---
@@ -185,13 +182,13 @@ with tab_realtime:
         df = pd.DataFrame(st.session_state.history)
         latest = df.iloc[-1]
         
-        # 计算各维度状态
+        # 计算各维度状态标签
         t_label, t_color, t_score = get_status_config(latest.get('temp', 0), ENV_THRESHOLDS['temp'])
         h_label, h_color, h_score = get_status_config(latest.get('humi', 0), ENV_THRESHOLDS['humi'])
         a_label, a_color, a_score = get_status_config(latest.get('ammonia', 0), ENV_THRESHOLDS['ammonia'])
         l_label, l_color, l_score = get_status_config(latest.get('light', 0), ENV_THRESHOLDS['light'], reverse=True)
 
-        # 指标展示
+        # 指标卡展示
         m1, m2, m3, m4 = st.columns(4)
         with m1:
             st.metric("环境温度", f"{latest.get('temp', 0):.1f} ℃")
@@ -206,7 +203,7 @@ with tab_realtime:
             st.metric("光照强度", f"{latest.get('light', 0):.0f} Lux")
             st.markdown(f":{l_color}[● {l_label}]")
 
-        # 总体综合评价 (取最差项分数为基准)
+        # 总体综合评价逻辑
         st.divider()
         final_score = max(t_score, h_score, a_score, l_score)
         eval_map = {
@@ -217,7 +214,11 @@ with tab_realtime:
         }
         res_tag, res_cls, res_text = eval_map[final_score]
         
-        st.success(f"🗓 **4月春季环境综合评价：{res_tag}** \n {res_text}") if final_score <= 1 else st.error(f"🚨 **4月春季环境综合评价：{res_tag}** \n {res_text}")
+        # 修正单行表达式报错，改为标准 if-else 渲染
+        if final_score <= 1:
+            st.success(f"🗓 **4月春季环境综合评价：{res_tag}** \n\n {res_text}")
+        else:
+            st.error(f"🚨 **4月春季环境综合评价：{res_tag}** \n\n {res_text}")
 
         st.divider()
         r1_l, r1_r = st.columns(2); r2_l, r2_r = st.columns(2)
