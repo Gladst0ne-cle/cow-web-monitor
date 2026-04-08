@@ -80,10 +80,10 @@ def get_hourly_thresholds():
     return ts
 
 def get_status_config(value, thresholds, mode='normal'):
+    # --- 仅修改此部分逻辑：光照始终评价为“优” ---
     if mode == 'light':
-        if value >= thresholds['good']: return "优", "green", 0
-        elif value >= thresholds['normal']: return "良", "blue", 1
-        else: return "警告", "orange", 2
+        return "优", "green", 0
+    # ------------------------------------------
     else:
         if value <= thresholds['good']: return "优", "green", 0
         elif value <= thresholds['normal']: return "良", "blue", 1
