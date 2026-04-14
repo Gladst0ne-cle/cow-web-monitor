@@ -148,6 +148,11 @@ def on_disconnect(client, userdata, rc, properties=None):
     st.session_state.mqtt_connected = False
     st.session_state.mqtt_error = f"断开连接 rc={rc}"
 
+    try:
+        client.reconnect()
+    except Exception as e:
+        st.session_state.mqtt_error = f"重连失败: {e}"
+
 def on_message(client, userdata, msg):
     try:
         raw = msg.payload.decode(errors="ignore")
@@ -183,11 +188,13 @@ def connect_mqtt():
         client.username_pw_set(c["MQTT_USER"], c["MQTT_PWD"])
         client.tls_set()
 
+        client.reconnect_delay_set(min_delay=1, max_delay=10)
+
         client.on_connect = on_connect
         client.on_disconnect = on_disconnect
         client.on_message = on_message
 
-        client.connect(c["MQTT_BROKER"], 8884, 60)
+        client.connect(c["MQTT_BROKER"], 8884, 30)
         client.loop_start()
 
         return client
@@ -200,6 +207,12 @@ if st.session_state.mqtt_client is None:
     st.session_state.mqtt_client = connect_mqtt()
 
 mqtt_client = st.session_state.mqtt_client
+
+if mqtt_client and not st.session_state.get("mqtt_connected", False):
+    try:
+        mqtt_client.reconnect()
+    except:
+        pass
 
 with st.sidebar:
     st.header("🎮 设备远程控制")
@@ -409,7 +422,7 @@ with tab_realtime:
         st.info("📡 等待传感器数据...")
 
 with tab_ai:
-    st.subheader("牛只姿态检测工作区")
+    st.subheader("📹 牛只姿态检测工作区")
 
     if not CV2_AVAILABLE:
         st.error("当前部署环境缺少 OpenCV 运行库，无法启用 AI 视频分析。")
