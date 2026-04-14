@@ -6,4 +6,4 @@ numpy
 altair
 torch
 ultralytics
-opencv-python-headless
+opencv-python
