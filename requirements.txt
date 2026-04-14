@@ -6,3 +6,4 @@ altair
 torch
 ultralytics
 opencv-python-headless
+streamlit-autorefresh
