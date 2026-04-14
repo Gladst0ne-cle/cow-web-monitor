@@ -249,7 +249,7 @@ with st.sidebar:
     st.write("最近解析错误:", st.session_state.get("last_error", "None"))
 
     st.divider()
-    st.header("🧠 AI 模块状态")
+    st.header("模块状态")
     if CV2_AVAILABLE:
         st.success("OpenCV 可用（AI 可运行）")
     else:
@@ -409,7 +409,7 @@ with tab_realtime:
         st.info("📡 等待传感器数据...")
 
 with tab_ai:
-    st.subheader("📹 AI 行为视频流")
+    st.subheader("牛只姿态检测工作区")
 
     if not CV2_AVAILABLE:
         st.error("当前部署环境缺少 OpenCV 运行库，无法启用 AI 视频分析。")
