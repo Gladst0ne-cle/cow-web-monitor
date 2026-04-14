@@ -13,12 +13,11 @@ from ultralytics import YOLO
 import tempfile
 import os
 import gc
+from streamlit_autorefresh import st_autorefresh
 
-# --- 0. 基础时区函数 ---
 def get_local_now():
     return datetime.now(timezone(timedelta(hours=8)))
 
-# --- 1. 核心配置 ---
 st.set_page_config(page_title="智能牛舍环境监测与调控系统", layout="wide", initial_sidebar_state="expanded")
 st.title("🐄 智能牛舍环境监测与调控系统")
 
@@ -37,10 +36,8 @@ def load_yolo_models():
 
 det_model, pose_model = load_yolo_models()
 
-# --- 2. 动态区间逻辑 ---
 def get_hourly_thresholds():
     h = get_local_now().hour
-
     if 0 <= h < 6:
         ts = {
             'temp': {'good': 14, 'normal': 18, 'warning': 22},
@@ -91,7 +88,6 @@ def get_status_config(value, thresholds, mode='normal'):
         else:
             return "异常", "red", 3
 
-# --- 3. MQTT 通信 ---
 @st.cache_resource
 def get_msg_queue():
     return queue.Queue()
@@ -108,7 +104,6 @@ def on_message(client, userdata, msg):
             payload['ammonia'] = payload['nh3']
         if 'lux' in payload:
             payload['light'] = payload['lux']
-
         if any(k in payload for k in ['temp', 'humi', 'ammonia', 'light']):
             payload['timestamp'] = get_local_now()
             msg_queue.put(payload)
@@ -133,7 +128,6 @@ def init_mqtt_connection():
 
 mqtt_client = init_mqtt_connection()
 
-# --- 4. 侧边栏 ---
 with st.sidebar:
     st.header("🎮 设备远程控制")
 
@@ -171,7 +165,6 @@ def create_center_chart(data, col, title, color):
         return None
     v_min, v_max = data[col].min(), data[col].max()
     margin = (v_max - v_min) * 0.2 if v_max != v_min else 2.0
-
     return alt.Chart(data).mark_line(color=color, strokeWidth=3).encode(
         x=alt.X('timestamp:T', axis=alt.Axis(title=None, format='%H:%M:%S')),
         y=alt.Y(f'{col}:Q', title=title,
@@ -180,10 +173,8 @@ def create_center_chart(data, col, title, color):
                  alt.Tooltip(f'{col}:Q', title=title)]
     ).properties(height=220).interactive()
 
-# --- 5. 视觉逻辑 ---
 def judge_cow_behavior(kpts, kpt_confs, bw, bh):
     ratio = float(bw) / float(bh + 1e-6)
-
     if kpts is not None and kpt_confs is not None and len(kpt_confs) > 0:
         if float(np.mean(kpt_confs)) > 0.2:
             try:
@@ -191,31 +182,24 @@ def judge_cow_behavior(kpts, kpt_confs, bw, bh):
                     return "Eating"
             except:
                 pass
-
     return "Lying" if ratio > 1.8 else "Standing"
 
 def process_vision_frame(frame, frame_id):
     if det_model is None:
         return frame
-
     results = det_model(frame, conf=0.4, verbose=False)
     if not results or results[0].boxes is None:
         return frame
-
     boxes = results[0].boxes.xyxy.cpu().numpy()
     if len(boxes) > max_cows:
         boxes = boxes[:max_cows]
-
     for i, box in enumerate(boxes):
         x1, y1, x2, y2 = map(int, box)
         bw, bh = x2 - x1, y2 - y1
-
         if bw < 40 or bh < 40:
             continue
-
         behavior = "Standing"
         crop = frame[max(0, y1):y2, max(0, x1):x2]
-
         if crop.size > 0 and pose_model and (frame_id % pose_every_n_frames == 0):
             p_res = pose_model.predict(crop, conf=0.25, verbose=False)
             if p_res and p_res[0].keypoints is not None:
@@ -226,34 +210,27 @@ def process_vision_frame(frame, frame_id):
                         kp.conf.cpu().numpy()[0],
                         bw, bh
                     )
-
         color = (255, 165, 0) if behavior == "Lying" else (0, 255, 0)
         if behavior == "Eating":
             color = (255, 255, 0)
-
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
         cv2.putText(frame, f"Cow{i+1} {behavior}", (x1, y1 - 10), 0, 0.7, color, 2)
-
     return frame
 
-# --- 6. 运行控制 ---
 while not msg_queue.empty():
     st.session_state.history.append(msg_queue.get())
     if len(st.session_state.history) > 100:
         st.session_state.history.pop(0)
 
-# --- 7. 页面展示 ---
 tab_realtime, tab_ai, tab_history = st.tabs(["📊 实时监测", "📷 行为识别", "📑 数据中心"])
 
 with tab_realtime:
     if st.session_state.history:
         df = pd.DataFrame(st.session_state.history)
         latest = df.iloc[-1]
-
         local_now = get_local_now()
         ts = get_hourly_thresholds()
         h_now = local_now.hour
-
         t_l, t_c, t_s = get_status_config(latest.get('temp', 0), ts['temp'])
         h_l, h_c, h_s = get_status_config(latest.get('humi', 0), ts['humi'])
         a_l, a_c, a_s = get_status_config(latest.get('ammonia', 0), ts['ammonia'])
@@ -313,11 +290,9 @@ with tab_realtime:
             st.altair_chart(create_center_chart(df, 'ammonia', '氨气趋势', '#29B09D'), use_container_width=True)
         with r2_r:
             st.altair_chart(create_center_chart(df, 'light', '光照趋势', '#FFD700'), use_container_width=True)
-
     else:
         st.info("📡 等待传感器数据...")
 
-# ------------------ 修复后的 AI 视频播放逻辑 ------------------
 with tab_ai:
     st.subheader("📹 AI 行为视频流")
 
@@ -347,7 +322,6 @@ with tab_ai:
                 st.session_state.frame_id = 0
             else:
                 st.warning("请先上传视频文件")
-
     else:
         if st.button("开启摄像头"):
             st.session_state.cap = cv2.VideoCapture(0)
@@ -355,7 +329,6 @@ with tab_ai:
             st.session_state.frame_id = 0
 
     stop_btn = st.button("⏹ 停止")
-
     v_display = st.empty()
 
     if stop_btn:
@@ -368,8 +341,6 @@ with tab_ai:
 
     if st.session_state.playing and st.session_state.cap is not None:
         cap = st.session_state.cap
-
-        # 每次 rerun 只读取一帧（关键）
         for _ in range(skip_frames):
             ret, frame = cap.read()
 
@@ -380,27 +351,17 @@ with tab_ai:
             st.warning("视频播放结束")
         else:
             st.session_state.frame_id += 1
-
             h, w = frame.shape[:2]
             frame = cv2.resize(frame, (800, int(h * (800.0 / w))))
-
             processed = process_vision_frame(frame, st.session_state.frame_id)
             v_display.image(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB), use_container_width=True)
 
-            while not msg_queue.empty():
-                st.session_state.history.append(msg_queue.get())
-
-            time.sleep(0.03)
-            st.rerun()
-
-# -------------------------------------------------------------
+            st_autorefresh(interval=30, key="video_refresh")
 
 with tab_history:
     st.subheader("📋 历史记录")
     if st.session_state.history:
         st.dataframe(pd.DataFrame(st.session_state.history), use_container_width=True)
 
-# --- 自动刷新实时数据 ---
 if not st.session_state.get("playing", False):
-    time.sleep(1.5)
-    st.rerun()
+    st_autorefresh(interval=1500, key="refresh_main")
