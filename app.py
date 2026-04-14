@@ -7,25 +7,12 @@ import time
 import queue
 import altair as alt
 from datetime import datetime, timedelta, timezone
+import cv2
+import torch
+from ultralytics import YOLO
 import tempfile
 import os
 import gc
-from streamlit_autorefresh import st_autorefresh
-
-# --- 尝试加载视觉模块（云端可能失败） ---
-CV2_AVAILABLE = True
-CV2_IMPORT_ERROR = ""
-
-try:
-    import cv2
-    import torch
-    from ultralytics import YOLO
-except Exception as e:
-    CV2_AVAILABLE = False
-    cv2 = None
-    torch = None
-    YOLO = None
-    CV2_IMPORT_ERROR = str(e)
 
 # --- 0. 基础时区函数 ---
 def get_local_now():
@@ -41,19 +28,11 @@ POSE_PATH = os.path.join(BASE_DIR, 'runs/pose/cattle_pose_v19/weights/best.pt')
 
 @st.cache_resource
 def load_yolo_models():
-    if not CV2_AVAILABLE:
-        return None, None
-
     if not os.path.exists(DET_PATH):
         return None, None
-
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     det = YOLO(DET_PATH).to(device)
-
-    pose = None
-    if os.path.exists(POSE_PATH):
-        pose = YOLO(POSE_PATH).to(device)
-
+    pose = YOLO(POSE_PATH).to(device) if os.path.exists(POSE_PATH) else None
     return det, pose
 
 det_model, pose_model = load_yolo_models()
@@ -97,7 +76,6 @@ def get_hourly_thresholds():
             'ammonia': {'good': 250, 'normal': 300, 'warning': 350},
             'light': {'good': 5, 'normal': 0, 'warning': 0}
         }
-
     return ts
 
 def get_status_config(value, thresholds, mode='normal'):
@@ -126,7 +104,6 @@ if 'history' not in st.session_state:
 def on_message(client, userdata, msg):
     try:
         payload = json.loads(msg.payload.decode())
-
         if 'nh3' in payload:
             payload['ammonia'] = payload['nh3']
         if 'lux' in payload:
@@ -189,18 +166,9 @@ with st.sidebar:
     pose_every_n_frames = st.slider("姿态分析频率", 5, 50, 15)
     max_cows = st.slider("最大处理数", 1, 10, 4)
 
-    st.divider()
-    st.header("📌 AI 模块状态")
-    if CV2_AVAILABLE:
-        st.success("cv2 可用（AI 可运行）")
-    else:
-        st.error("cv2 不可用（云端缺依赖）")
-        st.code(CV2_IMPORT_ERROR)
-
 def create_center_chart(data, col, title, color):
     if data.empty or col not in data.columns:
         return None
-
     v_min, v_max = data[col].min(), data[col].max()
     margin = (v_max - v_min) * 0.2 if v_max != v_min else 2.0
 
@@ -227,9 +195,6 @@ def judge_cow_behavior(kpts, kpt_confs, bw, bh):
     return "Lying" if ratio > 1.8 else "Standing"
 
 def process_vision_frame(frame, frame_id):
-    if not CV2_AVAILABLE:
-        return frame
-
     if det_model is None:
         return frame
 
@@ -271,10 +236,10 @@ def process_vision_frame(frame, frame_id):
 
     return frame
 
-# --- 6. 消费消息队列 ---
+# --- 6. 运行控制 ---
 while not msg_queue.empty():
     st.session_state.history.append(msg_queue.get())
-    if len(st.session_state.history) > 200:
+    if len(st.session_state.history) > 100:
         st.session_state.history.pop(0)
 
 # --- 7. 页面展示 ---
@@ -352,14 +317,9 @@ with tab_realtime:
     else:
         st.info("📡 等待传感器数据...")
 
+# ------------------ 修复后的 AI 视频播放逻辑 ------------------
 with tab_ai:
     st.subheader("📹 AI 行为视频流")
-
-    if not CV2_AVAILABLE:
-        st.error("当前部署环境缺少 OpenCV 运行库，无法启用 AI 视频分析。")
-        st.code(CV2_IMPORT_ERROR)
-        st.info("解决方法：本地/服务器运行此项目即可启用AI功能；Streamlit Cloud 仅能运行监测部分。")
-        st.stop()
 
     if "video_path" not in st.session_state:
         st.session_state.video_path = None
@@ -387,6 +347,7 @@ with tab_ai:
                 st.session_state.frame_id = 0
             else:
                 st.warning("请先上传视频文件")
+
     else:
         if st.button("开启摄像头"):
             st.session_state.cap = cv2.VideoCapture(0)
@@ -394,6 +355,7 @@ with tab_ai:
             st.session_state.frame_id = 0
 
     stop_btn = st.button("⏹ 停止")
+
     v_display = st.empty()
 
     if stop_btn:
@@ -407,6 +369,7 @@ with tab_ai:
     if st.session_state.playing and st.session_state.cap is not None:
         cap = st.session_state.cap
 
+        # 每次 rerun 只读取一帧（关键）
         for _ in range(skip_frames):
             ret, frame = cap.read()
 
@@ -417,17 +380,27 @@ with tab_ai:
             st.warning("视频播放结束")
         else:
             st.session_state.frame_id += 1
+
             h, w = frame.shape[:2]
             frame = cv2.resize(frame, (800, int(h * (800.0 / w))))
+
             processed = process_vision_frame(frame, st.session_state.frame_id)
             v_display.image(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB), use_container_width=True)
 
-            st_autorefresh(interval=50, key="video_refresh")
+            while not msg_queue.empty():
+                st.session_state.history.append(msg_queue.get())
+
+            time.sleep(0.03)
+            st.rerun()
+
+# -------------------------------------------------------------
 
 with tab_history:
     st.subheader("📋 历史记录")
     if st.session_state.history:
         st.dataframe(pd.DataFrame(st.session_state.history), use_container_width=True)
 
+# --- 自动刷新实时数据 ---
 if not st.session_state.get("playing", False):
-    st_autorefresh(interval=1500, key="refresh_main")
+    time.sleep(1.5)
+    st.rerun()
