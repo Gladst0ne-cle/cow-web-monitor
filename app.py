@@ -248,7 +248,7 @@ with tab_realtime:
         st.info("📡 等待传感器数据...")
 
 with tab_ai:
-    st.subheader("📹 牛只姿态检测工作区")
+    st.subheader("📹 牛只状况检测工作区")
 
     if cv2 is None:
         st.error("当前环境无法使用 OpenCV，AI 视频模块不可用。")
