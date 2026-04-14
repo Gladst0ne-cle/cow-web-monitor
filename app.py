@@ -7,18 +7,31 @@ import time
 import queue
 import altair as alt
 from datetime import datetime, timedelta, timezone
-import cv2
-import torch
-from ultralytics import YOLO
 import tempfile
 import os
 import gc
+from streamlit_autorefresh import st_autorefresh
 
-# --- 0. 基础时区函数 ---
+# -------------------- 可选视觉模块加载（云端可能缺依赖） --------------------
+CV2_AVAILABLE = True
+CV2_IMPORT_ERROR = ""
+
+try:
+    import cv2
+    import torch
+    from ultralytics import YOLO
+except Exception as e:
+    CV2_AVAILABLE = False
+    cv2 = None
+    torch = None
+    YOLO = None
+    CV2_IMPORT_ERROR = str(e)
+
+# -------------------- 0. 基础时区函数 --------------------
 def get_local_now():
     return datetime.now(timezone(timedelta(hours=8)))
 
-# --- 1. 核心配置 ---
+# -------------------- 1. 核心配置 --------------------
 st.set_page_config(page_title="智能牛舍环境监测与调控系统", layout="wide", initial_sidebar_state="expanded")
 st.title("🐄 智能牛舍环境监测与调控系统")
 
@@ -28,16 +41,24 @@ POSE_PATH = os.path.join(BASE_DIR, 'runs/pose/cattle_pose_v19/weights/best.pt')
 
 @st.cache_resource
 def load_yolo_models():
+    if not CV2_AVAILABLE:
+        return None, None
+
     if not os.path.exists(DET_PATH):
         return None, None
+
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     det = YOLO(DET_PATH).to(device)
-    pose = YOLO(POSE_PATH).to(device) if os.path.exists(POSE_PATH) else None
+
+    pose = None
+    if os.path.exists(POSE_PATH):
+        pose = YOLO(POSE_PATH).to(device)
+
     return det, pose
 
 det_model, pose_model = load_yolo_models()
 
-# --- 2. 动态区间逻辑 ---
+# -------------------- 2. 动态区间逻辑 --------------------
 def get_hourly_thresholds():
     h = get_local_now().hour
 
@@ -76,22 +97,23 @@ def get_hourly_thresholds():
             'ammonia': {'good': 250, 'normal': 300, 'warning': 350},
             'light': {'good': 5, 'normal': 0, 'warning': 0}
         }
+
     return ts
 
 def get_status_config(value, thresholds, mode='normal'):
     if mode == 'light':
         return "优", "green", 0
-    else:
-        if value <= thresholds['good']:
-            return "优", "green", 0
-        elif value <= thresholds['normal']:
-            return "良", "blue", 1
-        elif value <= thresholds['warning']:
-            return "警告", "orange", 2
-        else:
-            return "异常", "red", 3
 
-# --- 3. MQTT 通信 ---
+    if value <= thresholds['good']:
+        return "优", "green", 0
+    elif value <= thresholds['normal']:
+        return "良", "blue", 1
+    elif value <= thresholds['warning']:
+        return "警告", "orange", 2
+    else:
+        return "异常", "red", 3
+
+# -------------------- 3. MQTT 通信 --------------------
 @st.cache_resource
 def get_msg_queue():
     return queue.Queue()
@@ -103,7 +125,12 @@ if 'history' not in st.session_state:
 
 def on_message(client, userdata, msg):
     try:
-        payload = json.loads(msg.payload.decode())
+        raw = msg.payload.decode(errors="ignore")
+        st.session_state.last_topic = msg.topic
+        st.session_state.last_raw = raw
+
+        payload = json.loads(raw)
+
         if 'nh3' in payload:
             payload['ammonia'] = payload['nh3']
         if 'lux' in payload:
@@ -112,28 +139,42 @@ def on_message(client, userdata, msg):
         if any(k in payload for k in ['temp', 'humi', 'ammonia', 'light']):
             payload['timestamp'] = get_local_now()
             msg_queue.put(payload)
-    except:
-        pass
+            st.session_state.last_ok = payload
+
+    except Exception as e:
+        st.session_state.last_error = str(e)
 
 @st.cache_resource
 def init_mqtt_connection():
     try:
         c = st.secrets
-        client = mqtt.Client(transport="websockets")
-        client.tls_set()
-        client.ws_set_options(path="/mqtt")
+
+        client = mqtt.Client(
+            client_id="streamlit_dashboard",
+            transport="websockets"
+        )
+
         client.username_pw_set(c["MQTT_USER"], c["MQTT_PWD"])
+        client.tls_set()
+
+        # 关键：不要写 ws_set_options(path="/mqtt")
+
         client.on_message = on_message
         client.connect(c["MQTT_BROKER"], 8884, 60)
-        client.subscribe([("cow-web-monitor", 0), ("cowshed/control/manual", 0)])
+
+        client.subscribe("cow-web-monitor", 0)
+        client.subscribe("cowshed/control/manual", 0)
+
         client.loop_start()
         return client
-    except:
+
+    except Exception as e:
+        st.session_state["mqtt_error"] = str(e)
         return None
 
 mqtt_client = init_mqtt_connection()
 
-# --- 4. 侧边栏 ---
+# -------------------- 4. 侧边栏 --------------------
 with st.sidebar:
     st.header("🎮 设备远程控制")
 
@@ -166,9 +207,31 @@ with st.sidebar:
     pose_every_n_frames = st.slider("姿态分析频率", 5, 50, 15)
     max_cows = st.slider("最大处理数", 1, 10, 4)
 
+    st.divider()
+    st.header("📡 MQTT 状态")
+    if mqtt_client:
+        st.success("MQTT 已连接")
+    else:
+        st.error("MQTT 连接失败")
+        st.code(st.session_state.get("mqtt_error", "None"))
+
+    st.write("最近 Topic:", st.session_state.get("last_topic", "None"))
+    st.write("最近原始消息:", st.session_state.get("last_raw", "None"))
+    st.write("最近解析成功:", st.session_state.get("last_ok", "None"))
+    st.write("最近解析错误:", st.session_state.get("last_error", "None"))
+
+    st.divider()
+    st.header("🧠 AI 模块状态")
+    if CV2_AVAILABLE:
+        st.success("OpenCV 可用（AI 可运行）")
+    else:
+        st.error("OpenCV 不可用（云端缺依赖）")
+        st.code(CV2_IMPORT_ERROR)
+
 def create_center_chart(data, col, title, color):
     if data.empty or col not in data.columns:
         return None
+
     v_min, v_max = data[col].min(), data[col].max()
     margin = (v_max - v_min) * 0.2 if v_max != v_min else 2.0
 
@@ -180,7 +243,7 @@ def create_center_chart(data, col, title, color):
                  alt.Tooltip(f'{col}:Q', title=title)]
     ).properties(height=220).interactive()
 
-# --- 5. 视觉逻辑 ---
+# -------------------- 5. 视觉逻辑 --------------------
 def judge_cow_behavior(kpts, kpt_confs, bw, bh):
     ratio = float(bw) / float(bh + 1e-6)
 
@@ -195,6 +258,9 @@ def judge_cow_behavior(kpts, kpt_confs, bw, bh):
     return "Lying" if ratio > 1.8 else "Standing"
 
 def process_vision_frame(frame, frame_id):
+    if not CV2_AVAILABLE:
+        return frame
+
     if det_model is None:
         return frame
 
@@ -236,13 +302,13 @@ def process_vision_frame(frame, frame_id):
 
     return frame
 
-# --- 6. 运行控制 ---
+# -------------------- 6. 消费消息队列 --------------------
 while not msg_queue.empty():
     st.session_state.history.append(msg_queue.get())
-    if len(st.session_state.history) > 100:
+    if len(st.session_state.history) > 200:
         st.session_state.history.pop(0)
 
-# --- 7. 页面展示 ---
+# -------------------- 7. 页面展示 --------------------
 tab_realtime, tab_ai, tab_history = st.tabs(["📊 实时监测", "📷 行为识别", "📑 数据中心"])
 
 with tab_realtime:
@@ -317,9 +383,14 @@ with tab_realtime:
     else:
         st.info("📡 等待传感器数据...")
 
-# ------------------ 修复后的 AI 视频播放逻辑 ------------------
 with tab_ai:
     st.subheader("📹 AI 行为视频流")
+
+    if not CV2_AVAILABLE:
+        st.error("当前部署环境缺少 OpenCV 运行库，无法启用 AI 视频分析。")
+        st.code(CV2_IMPORT_ERROR)
+        st.info("解决方法：本地/服务器运行此项目即可启用AI功能；Streamlit Cloud 仅能运行监测部分。")
+        st.stop()
 
     if "video_path" not in st.session_state:
         st.session_state.video_path = None
@@ -347,7 +418,6 @@ with tab_ai:
                 st.session_state.frame_id = 0
             else:
                 st.warning("请先上传视频文件")
-
     else:
         if st.button("开启摄像头"):
             st.session_state.cap = cv2.VideoCapture(0)
@@ -355,7 +425,6 @@ with tab_ai:
             st.session_state.frame_id = 0
 
     stop_btn = st.button("⏹ 停止")
-
     v_display = st.empty()
 
     if stop_btn:
@@ -369,7 +438,6 @@ with tab_ai:
     if st.session_state.playing and st.session_state.cap is not None:
         cap = st.session_state.cap
 
-        # 每次 rerun 只读取一帧（关键）
         for _ in range(skip_frames):
             ret, frame = cap.read()
 
@@ -387,20 +455,12 @@ with tab_ai:
             processed = process_vision_frame(frame, st.session_state.frame_id)
             v_display.image(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB), use_container_width=True)
 
-            while not msg_queue.empty():
-                st.session_state.history.append(msg_queue.get())
-
-            time.sleep(0.03)
-            st.rerun()
-
-# -------------------------------------------------------------
+            st_autorefresh(interval=50, key="video_refresh")
 
 with tab_history:
     st.subheader("📋 历史记录")
     if st.session_state.history:
         st.dataframe(pd.DataFrame(st.session_state.history), use_container_width=True)
 
-# --- 自动刷新实时数据 ---
 if not st.session_state.get("playing", False):
-    time.sleep(1.5)
-    st.rerun()
+    st_autorefresh(interval=1500, key="refresh_main")
