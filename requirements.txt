@@ -1,4 +1,5 @@
 streamlit
+streamlit-autorefresh
 paho-mqtt
 pandas
 numpy
@@ -6,4 +7,3 @@ altair
 torch
 ultralytics
 opencv-python-headless
-streamlit-autorefresh
