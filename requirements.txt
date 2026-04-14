@@ -1,6 +1,8 @@
-ultralytics
-opencv-python-headless
+streamlit
 paho-mqtt
 pandas
 numpy
 altair
+torch
+ultralytics
+opencv-python-headless
