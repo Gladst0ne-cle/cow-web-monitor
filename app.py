@@ -3,16 +3,15 @@ import paho.mqtt.client as mqtt
 import json
 import pandas as pd
 import numpy as np
-import time
 import queue
 import altair as alt
 from datetime import datetime, timedelta, timezone
 import tempfile
 import os
 import gc
+import uuid
 from streamlit_autorefresh import st_autorefresh
 
-# -------------------- 可选视觉模块加载（云端可能缺依赖） --------------------
 CV2_AVAILABLE = True
 CV2_IMPORT_ERROR = ""
 
@@ -27,11 +26,9 @@ except Exception as e:
     YOLO = None
     CV2_IMPORT_ERROR = str(e)
 
-# -------------------- 0. 基础时区函数 --------------------
 def get_local_now():
     return datetime.now(timezone(timedelta(hours=8)))
 
-# -------------------- 1. 核心配置 --------------------
 st.set_page_config(page_title="智能牛舍环境监测与调控系统", layout="wide", initial_sidebar_state="expanded")
 st.title("🐄 智能牛舍环境监测与调控系统")
 
@@ -58,7 +55,6 @@ def load_yolo_models():
 
 det_model, pose_model = load_yolo_models()
 
-# -------------------- 2. 动态区间逻辑 --------------------
 def get_hourly_thresholds():
     h = get_local_now().hour
 
@@ -113,15 +109,44 @@ def get_status_config(value, thresholds, mode='normal'):
     else:
         return "异常", "red", 3
 
-# -------------------- 3. MQTT 通信 --------------------
 @st.cache_resource
 def get_msg_queue():
     return queue.Queue()
 
 msg_queue = get_msg_queue()
 
-if 'history' not in st.session_state:
+if "history" not in st.session_state:
     st.session_state.history = []
+
+if "mqtt_client" not in st.session_state:
+    st.session_state.mqtt_client = None
+if "mqtt_connected" not in st.session_state:
+    st.session_state.mqtt_connected = False
+if "mqtt_error" not in st.session_state:
+    st.session_state.mqtt_error = None
+
+if "last_topic" not in st.session_state:
+    st.session_state.last_topic = None
+if "last_raw" not in st.session_state:
+    st.session_state.last_raw = None
+if "last_ok" not in st.session_state:
+    st.session_state.last_ok = None
+if "last_error" not in st.session_state:
+    st.session_state.last_error = None
+
+def on_connect(client, userdata, flags, rc, properties=None):
+    if rc == 0:
+        st.session_state.mqtt_connected = True
+        st.session_state.mqtt_error = None
+        client.subscribe("cow-web-monitor", 0)
+        client.subscribe("cowshed/control/manual", 0)
+    else:
+        st.session_state.mqtt_connected = False
+        st.session_state.mqtt_error = f"连接返回码 rc={rc}"
+
+def on_disconnect(client, userdata, rc, properties=None):
+    st.session_state.mqtt_connected = False
+    st.session_state.mqtt_error = f"断开连接 rc={rc}"
 
 def on_message(client, userdata, msg):
     try:
@@ -131,60 +156,61 @@ def on_message(client, userdata, msg):
 
         payload = json.loads(raw)
 
-        if 'nh3' in payload:
-            payload['ammonia'] = payload['nh3']
-        if 'lux' in payload:
-            payload['light'] = payload['lux']
+        if "nh3" in payload:
+            payload["ammonia"] = payload["nh3"]
+        if "lux" in payload:
+            payload["light"] = payload["lux"]
 
-        if any(k in payload for k in ['temp', 'humi', 'ammonia', 'light']):
-            payload['timestamp'] = get_local_now()
+        if any(k in payload for k in ["temp", "humi", "ammonia", "light"]):
+            payload["timestamp"] = get_local_now()
             msg_queue.put(payload)
             st.session_state.last_ok = payload
 
     except Exception as e:
         st.session_state.last_error = str(e)
 
-@st.cache_resource
-def init_mqtt_connection():
+def connect_mqtt():
     try:
         c = st.secrets
 
+        client_id = "streamlit_" + str(uuid.uuid4())[:8]
+
         client = mqtt.Client(
-            client_id="streamlit_dashboard",
+            client_id=client_id,
             transport="websockets"
         )
 
         client.username_pw_set(c["MQTT_USER"], c["MQTT_PWD"])
         client.tls_set()
 
-        # 关键：不要写 ws_set_options(path="/mqtt")
-
+        client.on_connect = on_connect
+        client.on_disconnect = on_disconnect
         client.on_message = on_message
+
         client.connect(c["MQTT_BROKER"], 8884, 60)
-
-        client.subscribe("cow-web-monitor", 0)
-        client.subscribe("cowshed/control/manual", 0)
-
         client.loop_start()
+
         return client
 
     except Exception as e:
-        st.session_state["mqtt_error"] = str(e)
+        st.session_state.mqtt_error = str(e)
         return None
 
-mqtt_client = init_mqtt_connection()
+if st.session_state.mqtt_client is None:
+    st.session_state.mqtt_client = connect_mqtt()
 
-# -------------------- 4. 侧边栏 --------------------
+mqtt_client = st.session_state.mqtt_client
+
 with st.sidebar:
     st.header("🎮 设备远程控制")
 
     def send_mqtt_cmd(device, action):
-        if mqtt_client:
-            cmd = json.dumps({"device": device, "action": action, "time": int(time.time())})
+        if mqtt_client and st.session_state.get("mqtt_connected", False):
+            cmd = json.dumps({"device": device, "action": action, "time": int(datetime.now().timestamp())})
             mqtt_client.publish("cowshed/control/manual", cmd)
             st.toast(f"✅ 指令已送达: {device} -> {action.upper()}")
         else:
-            st.error("未连接到服务器")
+            st.error("MQTT 未连接，无法发送指令")
 
     col_f, col_h = st.columns(2)
     with col_f:
@@ -209,11 +235,13 @@ with st.sidebar:
 
     st.divider()
     st.header("📡 MQTT 状态")
-    if mqtt_client:
+
+    if st.session_state.get("mqtt_connected", False):
         st.success("MQTT 已连接")
     else:
         st.error("MQTT 连接失败")
-        st.code(st.session_state.get("mqtt_error", "None"))
+
+    st.code(st.session_state.get("mqtt_error", "None"))
 
     st.write("最近 Topic:", st.session_state.get("last_topic", "None"))
     st.write("最近原始消息:", st.session_state.get("last_raw", "None"))
@@ -243,7 +271,6 @@ def create_center_chart(data, col, title, color):
                  alt.Tooltip(f'{col}:Q', title=title)]
     ).properties(height=220).interactive()
 
-# -------------------- 5. 视觉逻辑 --------------------
 def judge_cow_behavior(kpts, kpt_confs, bw, bh):
     ratio = float(bw) / float(bh + 1e-6)
 
@@ -302,13 +329,11 @@ def process_vision_frame(frame, frame_id):
 
     return frame
 
-# -------------------- 6. 消费消息队列 --------------------
 while not msg_queue.empty():
     st.session_state.history.append(msg_queue.get())
     if len(st.session_state.history) > 200:
         st.session_state.history.pop(0)
 
-# -------------------- 7. 页面展示 --------------------
 tab_realtime, tab_ai, tab_history = st.tabs(["📊 实时监测", "📷 行为识别", "📑 数据中心"])
 
 with tab_realtime:
@@ -389,7 +414,6 @@ with tab_ai:
     if not CV2_AVAILABLE:
         st.error("当前部署环境缺少 OpenCV 运行库，无法启用 AI 视频分析。")
         st.code(CV2_IMPORT_ERROR)
-        st.info("解决方法：本地/服务器运行此项目即可启用AI功能；Streamlit Cloud 仅能运行监测部分。")
         st.stop()
 
     if "video_path" not in st.session_state:
