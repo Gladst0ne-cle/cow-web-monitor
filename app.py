@@ -265,7 +265,7 @@ def get_status_config(value, thresholds, mode='normal'):
 
 while not msg_queue.empty():
     st.session_state.history.append(msg_queue.get())
-    if len(st.session_state.history) > 200:
+    if len(st.session_state.history) > 2000:
         st.session_state.history.pop(0)
 
 tab_realtime, tab_ai, tab_history = st.tabs(["📊 实时监测", "📷 行为识别", "📑 数据中心"])
@@ -324,6 +324,8 @@ with tab_realtime:
 
         if final_score <= 1:
             st.success(f"🗓 **{local_now.strftime('%H:%M')} {time_tag}综合评价：{res_tag}** \n\n {res_text}")
+        elif final_score == 2:
+            st.warning(f"⚠️ **{local_now.strftime('%H:%M')} {time_tag}综合评价：{res_tag}** \n\n {res_text}")
         else:
             st.error(f"🚨 **{local_now.strftime('%H:%M')} {time_tag}综合评价：{res_tag}** \n\n {res_text}")
 
