@@ -322,7 +322,7 @@ with tab_realtime:
             st.metric("相对湿度", f"{latest.get('humi', 0):.1f} %")
             st.markdown(f":{h_c}[● {h_l}]")
         with m3:
-            st.metric("氨气浓度", f"{latest.get('ammonia', 0):.2f} ppm")
+            st.metric("氨气浓度", f"{latest.get('ammonia', 0):.2f} RV")
             st.markdown(f":{a_c}[● {a_l}]")
         with m4:
             st.metric("光照强度", f"{latest.get('light', 0):.0f} Lux")
