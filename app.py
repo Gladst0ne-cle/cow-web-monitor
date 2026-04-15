@@ -12,16 +12,11 @@ import gc
 import uuid
 from streamlit_autorefresh import st_autorefresh
 
-CV2_OK = True
-CV2_ERR = ""
-
 try:
     import cv2
     import torch
     from ultralytics import YOLO
-except Exception as e:
-    CV2_OK = False
-    CV2_ERR = str(e)
+except:
     cv2 = None
     torch = None
     YOLO = None
@@ -38,7 +33,7 @@ POSE_PATH = os.path.join(BASE_DIR, 'runs/pose/cattle_pose_v19/weights/best.pt')
 
 @st.cache_resource
 def load_yolo_models():
-    if not CV2_OK:
+    if cv2 is None or YOLO is None:
         return None, None
 
     if not os.path.exists(DET_PATH):
@@ -112,61 +107,6 @@ if st.session_state.mqtt_client is None:
 
 mqtt_client = st.session_state.mqtt_client
 
-# -------------------- 1. 动态评价逻辑 --------------------
-def get_hourly_thresholds():
-    h = get_local_now().hour
-
-    if 0 <= h < 6:
-        ts = {
-            'temp': {'good': 14, 'normal': 18, 'warning': 22},
-            'humi': {'good': 50, 'normal': 65, 'warning': 80},
-            'ammonia': {'good': 260, 'normal': 310, 'warning': 360},
-            'light': {'good': 0, 'normal': 0, 'warning': 0}
-        }
-    elif 6 <= h < 10:
-        ts = {
-            'temp': {'good': 18, 'normal': 22, 'warning': 26},
-            'humi': {'good': 55, 'normal': 70, 'warning': 85},
-            'ammonia': {'good': 280, 'normal': 330, 'warning': 380},
-            'light': {'good': 80, 'normal': 40, 'warning': 10}
-        }
-    elif 10 <= h < 16:
-        ts = {
-            'temp': {'good': 24, 'normal': 28, 'warning': 32},
-            'humi': {'good': 60, 'normal': 75, 'warning': 90},
-            'ammonia': {'good': 300, 'normal': 350, 'warning': 410},
-            'light': {'good': 150, 'normal': 100, 'warning': 50}
-        }
-    elif 16 <= h < 20:
-        ts = {
-            'temp': {'good': 20, 'normal': 24, 'warning': 28},
-            'humi': {'good': 58, 'normal': 72, 'warning': 85},
-            'ammonia': {'good': 270, 'normal': 320, 'warning': 370},
-            'light': {'good': 50, 'normal': 20, 'warning': 5}
-        }
-    else:
-        ts = {
-            'temp': {'good': 16, 'normal': 20, 'warning': 24},
-            'humi': {'good': 52, 'normal': 68, 'warning': 80},
-            'ammonia': {'good': 250, 'normal': 300, 'warning': 350},
-            'light': {'good': 5, 'normal': 0, 'warning': 0}
-        }
-
-    return ts
-
-def get_status_config(value, thresholds, mode='normal'):
-    if mode == 'light':
-        return "优", "green", 0
-
-    if value <= thresholds['good']:
-        return "优", "green", 0
-    elif value <= thresholds['normal']:
-        return "良", "blue", 1
-    elif value <= thresholds['warning']:
-        return "警告", "orange", 2
-    else:
-        return "异常", "red", 3
-
 with st.sidebar:
     st.header("🎮 设备远程控制")
 
@@ -228,9 +168,6 @@ def judge_cow_behavior(kpts, kpt_confs, bw, bh):
     return "Lying" if ratio > 1.8 else "Standing"
 
 def process_vision_frame(frame, frame_id):
-    if not CV2_OK:
-        return frame
-
     if det_model is None:
         return frame
 
@@ -272,6 +209,60 @@ def process_vision_frame(frame, frame_id):
 
     return frame
 
+def get_hourly_thresholds():
+    h = get_local_now().hour
+
+    if 0 <= h < 6:
+        ts = {
+            'temp': {'good': 16, 'normal': 20, 'warning': 26},
+            'humi': {'good': 55, 'normal': 75, 'warning': 90},
+            'ammonia': {'good': 300, 'normal': 380, 'warning': 500},
+            'light': {'good': 0, 'normal': 0, 'warning': 0}
+        }
+    elif 6 <= h < 10:
+        ts = {
+            'temp': {'good': 20, 'normal': 25, 'warning': 30},
+            'humi': {'good': 60, 'normal': 80, 'warning': 95},
+            'ammonia': {'good': 320, 'normal': 400, 'warning': 520},
+            'light': {'good': 100, 'normal': 60, 'warning': 20}
+        }
+    elif 10 <= h < 16:
+        ts = {
+            'temp': {'good': 26, 'normal': 31, 'warning': 36},
+            'humi': {'good': 65, 'normal': 85, 'warning': 98},
+            'ammonia': {'good': 340, 'normal': 430, 'warning': 550},
+            'light': {'good': 180, 'normal': 120, 'warning': 60}
+        }
+    elif 16 <= h < 20:
+        ts = {
+            'temp': {'good': 22, 'normal': 27, 'warning': 32},
+            'humi': {'good': 62, 'normal': 82, 'warning': 95},
+            'ammonia': {'good': 310, 'normal': 390, 'warning': 520},
+            'light': {'good': 70, 'normal': 30, 'warning': 10}
+        }
+    else:
+        ts = {
+            'temp': {'good': 18, 'normal': 23, 'warning': 28},
+            'humi': {'good': 58, 'normal': 78, 'warning': 92},
+            'ammonia': {'good': 290, 'normal': 370, 'warning': 480},
+            'light': {'good': 10, 'normal': 0, 'warning': 0}
+        }
+
+    return ts
+
+def get_status_config(value, thresholds, mode='normal'):
+    if mode == 'light':
+        return "优", "green", 0
+
+    if value <= thresholds['good']:
+        return "优", "green", 0
+    elif value <= thresholds['normal']:
+        return "良", "blue", 1
+    elif value <= thresholds['warning']:
+        return "警告", "orange", 2
+    else:
+        return "异常", "red", 3
+
 while not msg_queue.empty():
     st.session_state.history.append(msg_queue.get())
     if len(st.session_state.history) > 200:
@@ -279,7 +270,6 @@ while not msg_queue.empty():
 
 tab_realtime, tab_ai, tab_history = st.tabs(["📊 实时监测", "📷 行为识别", "📑 数据中心"])
 
-# -------------------- 2. 实时监测页面的展示逻辑 --------------------
 with tab_realtime:
     if st.session_state.history:
         df = pd.DataFrame(st.session_state.history)
@@ -356,9 +346,9 @@ with tab_realtime:
 with tab_ai:
     st.subheader("📹 牛只状况检测工作区")
 
-    if not CV2_OK:
-        st.warning("OpenCV 当前不可用，视频分析功能暂时无法运行。")
-        st.code(CV2_ERR)
+    if cv2 is None:
+        st.error("当前环境无法使用 OpenCV，AI 视频模块不可用。")
+        st.stop()
 
     if "video_path" not in st.session_state:
         st.session_state.video_path = None
@@ -380,23 +370,17 @@ with tab_ai:
             st.session_state.video_path = tfile.name
 
         if st.button("开始分析"):
-            if not CV2_OK:
-                st.error("OpenCV 不可用，无法启动视频分析。")
-            else:
-                if st.session_state.video_path:
-                    st.session_state.cap = cv2.VideoCapture(st.session_state.video_path)
-                    st.session_state.playing = True
-                    st.session_state.frame_id = 0
-                else:
-                    st.warning("请先上传视频文件")
-    else:
-        if st.button("开启摄像头"):
-            if not CV2_OK:
-                st.error("OpenCV 不可用，无法启动摄像头。")
-            else:
-                st.session_state.cap = cv2.VideoCapture(0)
+            if st.session_state.video_path:
+                st.session_state.cap = cv2.VideoCapture(st.session_state.video_path)
                 st.session_state.playing = True
                 st.session_state.frame_id = 0
+            else:
+                st.warning("请先上传视频文件")
+    else:
+        if st.button("开启摄像头"):
+            st.session_state.cap = cv2.VideoCapture(0)
+            st.session_state.playing = True
+            st.session_state.frame_id = 0
 
     stop_btn = st.button("⏹ 停止")
     v_display = st.empty()
@@ -404,15 +388,12 @@ with tab_ai:
     if stop_btn:
         st.session_state.playing = False
         if st.session_state.cap:
-            try:
-                st.session_state.cap.release()
-            except:
-                pass
+            st.session_state.cap.release()
         st.session_state.cap = None
         gc.collect()
         st.info("已停止播放")
 
-    if CV2_OK and st.session_state.playing and st.session_state.cap is not None:
+    if st.session_state.playing and st.session_state.cap is not None:
         cap = st.session_state.cap
 
         for _ in range(skip_frames):
