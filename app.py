@@ -50,46 +50,88 @@ def load_yolo_models():
 
 det_model, pose_model = load_yolo_models()
 
+@st.cache_resource
+def get_msg_queue():
+    return queue.Queue()
+
+msg_queue = get_msg_queue()
+
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+if "mqtt_client" not in st.session_state:
+    st.session_state.mqtt_client = None
+
 def get_hourly_thresholds():
     h = get_local_now().hour
 
     if 0 <= h < 6:
         ts = {
-            'temp': {'good': 18, 'normal': 24, 'warning': 30},
+            'temp': {
+                'good_low': 16, 'good_high': 24,
+                'normal_low': 14, 'normal_high': 28,
+                'warning_low': 10, 'warning_high': 32
+            },
             'humi': {'good': 55, 'normal': 75, 'warning': 90},
             'ammonia': {'good': 300, 'normal': 380, 'warning': 500},
             'light': {'good': 0, 'normal': 0, 'warning': 0}
         }
     elif 6 <= h < 10:
         ts = {
-            'temp': {'good': 20, 'normal': 26, 'warning': 32},
+            'temp': {
+                'good_low': 18, 'good_high': 26,
+                'normal_low': 15, 'normal_high': 30,
+                'warning_low': 12, 'warning_high': 34
+            },
             'humi': {'good': 60, 'normal': 80, 'warning': 95},
             'ammonia': {'good': 320, 'normal': 400, 'warning': 520},
             'light': {'good': 100, 'normal': 60, 'warning': 20}
         }
     elif 10 <= h < 16:
         ts = {
-            'temp': {'good': 24, 'normal': 30, 'warning': 36},
+            'temp': {
+                'good_low': 20, 'good_high': 28,
+                'normal_low': 17, 'normal_high': 32,
+                'warning_low': 14, 'warning_high': 36
+            },
             'humi': {'good': 65, 'normal': 85, 'warning': 98},
             'ammonia': {'good': 340, 'normal': 430, 'warning': 550},
             'light': {'good': 180, 'normal': 120, 'warning': 60}
         }
     elif 16 <= h < 20:
         ts = {
-            'temp': {'good': 20, 'normal': 26, 'warning': 32},
+            'temp': {
+                'good_low': 18, 'good_high': 26,
+                'normal_low': 15, 'normal_high': 30,
+                'warning_low': 12, 'warning_high': 34
+            },
             'humi': {'good': 62, 'normal': 82, 'warning': 95},
             'ammonia': {'good': 310, 'normal': 390, 'warning': 520},
             'light': {'good': 70, 'normal': 30, 'warning': 10}
         }
     else:
         ts = {
-            'temp': {'good': 18, 'normal': 24, 'warning': 30},
+            'temp': {
+                'good_low': 16, 'good_high': 24,
+                'normal_low': 14, 'normal_high': 28,
+                'warning_low': 10, 'warning_high': 32
+            },
             'humi': {'good': 58, 'normal': 78, 'warning': 92},
             'ammonia': {'good': 290, 'normal': 370, 'warning': 480},
             'light': {'good': 10, 'normal': 0, 'warning': 0}
         }
 
     return ts
+
+def get_temp_status(value, t):
+    if t["good_low"] <= value <= t["good_high"]:
+        return "优", "green", 0
+    elif t["normal_low"] <= value <= t["normal_high"]:
+        return "良", "blue", 1
+    elif t["warning_low"] <= value <= t["warning_high"]:
+        return "警告", "orange", 2
+    else:
+        return "异常", "red", 3
 
 def get_status_config(value, thresholds, mode='normal'):
     if mode == 'light':
@@ -103,18 +145,6 @@ def get_status_config(value, thresholds, mode='normal'):
         return "警告", "orange", 2
     else:
         return "异常", "red", 3
-
-@st.cache_resource
-def get_msg_queue():
-    return queue.Queue()
-
-msg_queue = get_msg_queue()
-
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-if "mqtt_client" not in st.session_state:
-    st.session_state.mqtt_client = None
 
 def on_message(client, userdata, msg):
     try:
@@ -279,7 +309,7 @@ with tab_realtime:
         ts = get_hourly_thresholds()
         h_now = local_now.hour
 
-        t_l, t_c, t_s = get_status_config(latest.get('temp', 0), ts['temp'])
+        t_l, t_c, t_s = get_temp_status(latest.get('temp', 0), ts['temp'])
         h_l, h_c, h_s = get_status_config(latest.get('humi', 0), ts['humi'])
         a_l, a_c, a_s = get_status_config(latest.get('ammonia', 0), ts['ammonia'])
         l_l, l_c, l_s = get_status_config(latest.get('light', 0), ts['light'], mode='light')
@@ -330,7 +360,6 @@ with tab_realtime:
             st.error(f"🚨 **{local_now.strftime('%H:%M')} {time_tag}综合评价：{res_tag}** \n\n {res_text}")
 
         st.divider()
-
         r1_l, r1_r = st.columns(2)
         r2_l, r2_r = st.columns(2)
 
