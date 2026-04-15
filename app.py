@@ -50,6 +50,60 @@ def load_yolo_models():
 
 det_model, pose_model = load_yolo_models()
 
+def get_hourly_thresholds():
+    h = get_local_now().hour
+
+    if 0 <= h < 6:
+        ts = {
+            'temp': {'good': 18, 'normal': 24, 'warning': 30},
+            'humi': {'good': 55, 'normal': 75, 'warning': 90},
+            'ammonia': {'good': 300, 'normal': 380, 'warning': 500},
+            'light': {'good': 0, 'normal': 0, 'warning': 0}
+        }
+    elif 6 <= h < 10:
+        ts = {
+            'temp': {'good': 20, 'normal': 26, 'warning': 32},
+            'humi': {'good': 60, 'normal': 80, 'warning': 95},
+            'ammonia': {'good': 320, 'normal': 400, 'warning': 520},
+            'light': {'good': 100, 'normal': 60, 'warning': 20}
+        }
+    elif 10 <= h < 16:
+        ts = {
+            'temp': {'good': 24, 'normal': 30, 'warning': 36},
+            'humi': {'good': 65, 'normal': 85, 'warning': 98},
+            'ammonia': {'good': 340, 'normal': 430, 'warning': 550},
+            'light': {'good': 180, 'normal': 120, 'warning': 60}
+        }
+    elif 16 <= h < 20:
+        ts = {
+            'temp': {'good': 20, 'normal': 26, 'warning': 32},
+            'humi': {'good': 62, 'normal': 82, 'warning': 95},
+            'ammonia': {'good': 310, 'normal': 390, 'warning': 520},
+            'light': {'good': 70, 'normal': 30, 'warning': 10}
+        }
+    else:
+        ts = {
+            'temp': {'good': 18, 'normal': 24, 'warning': 30},
+            'humi': {'good': 58, 'normal': 78, 'warning': 92},
+            'ammonia': {'good': 290, 'normal': 370, 'warning': 480},
+            'light': {'good': 10, 'normal': 0, 'warning': 0}
+        }
+
+    return ts
+
+def get_status_config(value, thresholds, mode='normal'):
+    if mode == 'light':
+        return "优", "green", 0
+
+    if value <= thresholds['good']:
+        return "优", "green", 0
+    elif value <= thresholds['normal']:
+        return "良", "blue", 1
+    elif value <= thresholds['warning']:
+        return "警告", "orange", 2
+    else:
+        return "异常", "red", 3
+
 @st.cache_resource
 def get_msg_queue():
     return queue.Queue()
@@ -209,60 +263,6 @@ def process_vision_frame(frame, frame_id):
 
     return frame
 
-def get_hourly_thresholds():
-    h = get_local_now().hour
-
-    if 0 <= h < 6:
-        ts = {
-            'temp': {'good': 16, 'normal': 20, 'warning': 26},
-            'humi': {'good': 55, 'normal': 75, 'warning': 90},
-            'ammonia': {'good': 300, 'normal': 380, 'warning': 500},
-            'light': {'good': 0, 'normal': 0, 'warning': 0}
-        }
-    elif 6 <= h < 10:
-        ts = {
-            'temp': {'good': 20, 'normal': 25, 'warning': 30},
-            'humi': {'good': 60, 'normal': 80, 'warning': 95},
-            'ammonia': {'good': 320, 'normal': 400, 'warning': 520},
-            'light': {'good': 100, 'normal': 60, 'warning': 20}
-        }
-    elif 10 <= h < 16:
-        ts = {
-            'temp': {'good': 26, 'normal': 31, 'warning': 36},
-            'humi': {'good': 65, 'normal': 85, 'warning': 98},
-            'ammonia': {'good': 340, 'normal': 430, 'warning': 550},
-            'light': {'good': 180, 'normal': 120, 'warning': 60}
-        }
-    elif 16 <= h < 20:
-        ts = {
-            'temp': {'good': 22, 'normal': 27, 'warning': 32},
-            'humi': {'good': 62, 'normal': 82, 'warning': 95},
-            'ammonia': {'good': 310, 'normal': 390, 'warning': 520},
-            'light': {'good': 70, 'normal': 30, 'warning': 10}
-        }
-    else:
-        ts = {
-            'temp': {'good': 18, 'normal': 23, 'warning': 28},
-            'humi': {'good': 58, 'normal': 78, 'warning': 92},
-            'ammonia': {'good': 290, 'normal': 370, 'warning': 480},
-            'light': {'good': 10, 'normal': 0, 'warning': 0}
-        }
-
-    return ts
-
-def get_status_config(value, thresholds, mode='normal'):
-    if mode == 'light':
-        return "优", "green", 0
-
-    if value <= thresholds['good']:
-        return "优", "green", 0
-    elif value <= thresholds['normal']:
-        return "良", "blue", 1
-    elif value <= thresholds['warning']:
-        return "警告", "orange", 2
-    else:
-        return "异常", "red", 3
-
 while not msg_queue.empty():
     st.session_state.history.append(msg_queue.get())
     if len(st.session_state.history) > 2000:
@@ -330,6 +330,7 @@ with tab_realtime:
             st.error(f"🚨 **{local_now.strftime('%H:%M')} {time_tag}综合评价：{res_tag}** \n\n {res_text}")
 
         st.divider()
+
         r1_l, r1_r = st.columns(2)
         r2_l, r2_r = st.columns(2)
 
